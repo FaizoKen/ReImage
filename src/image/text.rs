@@ -180,7 +180,7 @@ pub fn generate_text_svg(texts: &[TextConfig], width: u32, height: u32, max_text
     }
 
     let svg = format!(
-        r#"<svg width="{}" height="{}">{}</svg>"#,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}">{}</svg>"#,
         width, height, elements
     );
 

@@ -347,7 +347,10 @@ fn render_svg_to_image(svg_data: &[u8], width: u32, height: u32) -> AppResult<Dy
     use resvg::tiny_skia;
     use resvg::usvg;
 
-    let options = usvg::Options::default();
+    // Load system fonts for text rendering
+    let mut options = usvg::Options::default();
+    options.fontdb_mut().load_system_fonts();
+
     let tree = usvg::Tree::from_data(svg_data, &options)
         .map_err(|e| AppError::ImageProcessing(format!("Failed to parse SVG: {}", e)))?;
 
