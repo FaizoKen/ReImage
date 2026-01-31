@@ -1,0 +1,41 @@
+services:
+  reimage:
+    build: .
+    image: reimage-rust
+    container_name: reimage
+    ports:
+      - "80:80"
+    environment:
+      - PORT=80
+      - NODE_ENV=production
+      - RUST_LOG=info
+      # Cache settings
+      - OUTPUT_CACHE_SIZE_MB=750
+      - SOURCE_CACHE_SIZE_MB=500
+      # Timeouts
+      - REQUEST_TIMEOUT_MS=30000
+      - FETCH_TIMEOUT_MAIN=15000
+      # Limits
+      - MAX_DIMENSION=8000
+      - MAX_DOWNLOAD_SIZE_MB=10
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:80/health",
+        ]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
