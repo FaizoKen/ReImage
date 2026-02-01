@@ -1,8 +1,8 @@
 services:
-  reimage:
+  reimage-rust:
     build: .
     image: reimage-rust
-    container_name: reimage
+    container_name: reimage-rust
     ports:
       - "80:80"
     environment:
