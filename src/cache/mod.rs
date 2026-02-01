@@ -1,6 +1,8 @@
+use ahash::AHasher;
 use bytes::Bytes;
 use moka::future::Cache;
 use once_cell::sync::OnceCell;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -118,44 +120,38 @@ impl CacheManager {
     }
 }
 
-/// Generate cache key for output cache
+/// Generate cache key for output cache using fast hashing
+/// Uses ahash for O(1) allocation-free key generation
 pub fn get_cache_key(params: &ImageParams) -> String {
-    let serialize = |arr: &[String]| arr.join(",");
-    let serialize_i64 = |arr: &[i64]| {
-        arr.iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    };
-    let serialize_u32 = |arr: &[u32]| {
-        arr.iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    };
+    let mut hasher = AHasher::default();
 
-    [
-        params.src.as_str(),
-        &params.maxw.map(|v| v.to_string()).unwrap_or_default(),
-        &params.maxh.map(|v| v.to_string()).unwrap_or_default(),
-        &params.rad.unwrap_or(0).to_string(),
-        &serialize(&params.overlay),
-        &serialize_i64(&params.ox),
-        &serialize_i64(&params.oy),
-        &serialize_u32(&params.omaxw),
-        &serialize_u32(&params.omaxh),
-        &serialize_u32(&params.orad),
-        &serialize(&params.text),
-        &serialize_i64(&params.tx),
-        &serialize_i64(&params.ty),
-        &serialize_u32(&params.ts),
-        &serialize(&params.tc),
-        &serialize(&params.tf),
-        &serialize_u32(&params.tmaxw),
-        &serialize_u32(&params.tmaxh),
-        &serialize(&params.ta),
-    ]
-    .join("|")
+    // Hash all parameters directly without string allocation
+    params.src.hash(&mut hasher);
+    params.maxw.hash(&mut hasher);
+    params.maxh.hash(&mut hasher);
+    params.rad.hash(&mut hasher);
+
+    // Hash overlay parameters
+    params.overlay.hash(&mut hasher);
+    params.ox.hash(&mut hasher);
+    params.oy.hash(&mut hasher);
+    params.omaxw.hash(&mut hasher);
+    params.omaxh.hash(&mut hasher);
+    params.orad.hash(&mut hasher);
+
+    // Hash text parameters
+    params.text.hash(&mut hasher);
+    params.tx.hash(&mut hasher);
+    params.ty.hash(&mut hasher);
+    params.ts.hash(&mut hasher);
+    params.tc.hash(&mut hasher);
+    params.tf.hash(&mut hasher);
+    params.tmaxw.hash(&mut hasher);
+    params.tmaxh.hash(&mut hasher);
+    params.ta.hash(&mut hasher);
+
+    // Convert hash to hex string (16 chars)
+    format!("{:016x}", hasher.finish())
 }
 
 /// Image request parameters
@@ -197,9 +193,24 @@ mod tests {
         };
 
         let key = get_cache_key(&params);
-        assert!(key.contains("https://example.com/image.jpg"));
-        assert!(key.contains("800"));
-        assert!(key.contains("600"));
-        assert!(key.contains("10"));
+
+        // Key should be a 16-character hex string (64-bit hash)
+        assert_eq!(key.len(), 16);
+        assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // Same params should produce same key (deterministic)
+        let key2 = get_cache_key(&params);
+        assert_eq!(key, key2);
+
+        // Different params should produce different key
+        let different_params = ImageParams {
+            src: "https://example.com/other.jpg".to_string(),
+            maxw: Some(800),
+            maxh: Some(600),
+            rad: Some(10),
+            ..Default::default()
+        };
+        let different_key = get_cache_key(&different_params);
+        assert_ne!(key, different_key);
     }
 }

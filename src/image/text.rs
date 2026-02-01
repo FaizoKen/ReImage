@@ -140,9 +140,11 @@ fn alignment_to_text_anchor(align: &str) -> &'static str {
     }
 }
 
-/// Generate SVG for text overlay
+/// Generate SVG for text overlay (optimized with capacity hints)
 pub fn generate_text_svg(texts: &[TextConfig], width: u32, height: u32, max_text_length: usize) -> Bytes {
-    let mut elements = String::new();
+    // Pre-allocate with estimated capacity (reduces reallocations)
+    // Average text element is ~200 bytes
+    let mut elements = String::with_capacity(texts.len() * 200);
 
     for config in texts {
         if config.text.is_empty() {
@@ -172,14 +174,22 @@ pub fn generate_text_svg(texts: &[TextConfig], width: u32, height: u32, max_text
             let safe_text = sanitize_text(line, max_text_length);
             let line_y = config.y + config.font_size as i64 + (line_index as f64 * lh) as i64;
 
-            elements.push_str(&format!(
+            // Use write! macro with fmt::Write trait for zero-allocation formatting
+            use std::fmt::Write;
+            let _ = write!(
+                elements,
                 r#"<text x="{}" y="{}" font-family="'{}'" font-size="{}" fill="{}" text-anchor="{}" xml:space="preserve" style="font-weight: bold;">{}</text>"#,
                 config.x, line_y, font_family, config.font_size, color, text_anchor, safe_text
-            ));
+            );
         }
     }
 
-    let svg = format!(
+    // Pre-calculate SVG wrapper size
+    let svg_capacity = 80 + elements.len(); // SVG wrapper is ~80 bytes
+    let mut svg = String::with_capacity(svg_capacity);
+    use std::fmt::Write;
+    let _ = write!(
+        svg,
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}">{}</svg>"#,
         width, height, elements
     );

@@ -6,10 +6,19 @@ use axum::{
 };
 use bytes::Bytes;
 use image::DynamicImage;
+use once_cell::sync::Lazy;
+use resvg::usvg::fontdb;
 use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::cache::{get_cache_key, CacheManager, ImageParams};
+
+/// Global font database - loaded once and reused for all SVG rendering
+static FONT_DB: Lazy<fontdb::Database> = Lazy::new(|| {
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+    db
+});
 use crate::config::Config;
 use crate::http_client::{FetchError, HttpClient};
 use crate::image::{
@@ -342,14 +351,16 @@ pub async fn handle_image(
     ))
 }
 
-/// Render SVG to image using resvg
+/// Render SVG to image using resvg (optimized with cached font database)
 fn render_svg_to_image(svg_data: &[u8], width: u32, height: u32) -> AppResult<DynamicImage> {
     use resvg::tiny_skia;
     use resvg::usvg;
 
-    // Load system fonts for text rendering
-    let mut options = usvg::Options::default();
-    options.fontdb_mut().load_system_fonts();
+    // Use cached font database (loaded once at startup)
+    let options = usvg::Options {
+        fontdb: std::sync::Arc::new(FONT_DB.clone()),
+        ..Default::default()
+    };
 
     let tree = usvg::Tree::from_data(svg_data, &options)
         .map_err(|e| AppError::ImageProcessing(format!("Failed to parse SVG: {}", e)))?;
@@ -364,9 +375,8 @@ fn render_svg_to_image(svg_data: &[u8], width: u32, height: u32) -> AppResult<Dy
     let transform = tiny_skia::Transform::from_scale(scale_x, scale_y);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
-    // Convert to image::RgbaImage
-    let data = pixmap.data().to_vec();
-    let rgba = image::RgbaImage::from_raw(width, height, data)
+    // Convert to image::RgbaImage - use the data directly without extra allocation
+    let rgba = image::RgbaImage::from_raw(width, height, pixmap.take())
         .ok_or_else(|| AppError::ImageProcessing("Failed to create RGBA image".to_string()))?;
 
     Ok(DynamicImage::ImageRgba8(rgba))

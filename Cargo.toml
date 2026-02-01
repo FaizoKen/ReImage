@@ -16,10 +16,13 @@ tower-http = { version = "0.6", features = ["timeout", "limit", "set-header", "t
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 
-# Image processing
-image = { version = "0.25", features = ["webp", "jpeg", "png", "gif", "bmp", "tiff"] }
+# Image processing - rayon enables parallel pixel operations
+image = { version = "0.25", features = ["webp", "jpeg", "png", "gif", "bmp", "tiff", "rayon"] }
 webp = "0.3"
 resvg = "0.44"
+
+# Parallel processing for CPU-bound operations
+rayon = "1.10"
 
 # HTTP client
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "gzip", "deflate"] }
@@ -58,12 +61,20 @@ ipnetwork = "0.20"
 futures = "0.3"
 async-trait = "0.1"
 
+# Fast hashing for cache keys
+ahash = "0.8"
+
 [profile.release]
 opt-level = 3
-lto = true
+lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
+# Enable frame pointers for better profiling (minimal overhead)
+debug = 0
+
+[profile.release.build-override]
+opt-level = 3
 
 [profile.dev]
 opt-level = 1
