@@ -24,7 +24,7 @@ RUN mkdir src && \
 
 # Build dependencies only (cached layer)
 RUN cargo build --release && \
-    rm -rf src target/release/deps/reimage*
+    rm -rf src target/release/deps/reimage_rust*
 
 # Copy actual source code
 COPY src ./src
@@ -54,7 +54,7 @@ RUN addgroup -g 1001 -S appgroup && \
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /app/target/release/reimage /app/reimage
+COPY --from=builder /app/target/release/reimage-rust /app/reimage-rust
 
 # Set ownership
 RUN chown -R appuser:appgroup /app
@@ -62,17 +62,20 @@ RUN chown -R appuser:appgroup /app
 # Switch to non-root user
 USER appuser
 
-# Expose port
-EXPOSE 80
+# Expose port (non-privileged port for security)
+EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:80/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
 # Set environment
-ENV PORT=80
+ENV PORT=8080
 ENV NODE_ENV=production
 ENV RUST_LOG=warn
+# Security defaults
+ENV AGENT_REJECT_UNAUTHORIZED=true
+ENV ENABLE_REQUEST_LOGGING=true
 
 # Run the binary
-CMD ["./reimage"]
+CMD ["./reimage-rust"]

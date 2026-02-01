@@ -1,3 +1,5 @@
+use ipnetwork::IpNetwork;
+use std::collections::HashSet;
 use std::env;
 use std::time::Duration;
 
@@ -39,6 +41,29 @@ fn env_bool(key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+fn env_vec(key: &str) -> Vec<String> {
+    env::var(key)
+        .ok()
+        .map(|v| {
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn env_hash_set(key: &str) -> HashSet<String> {
+    env_vec(key).into_iter().collect()
+}
+
+fn env_ip_networks(key: &str) -> Vec<IpNetwork> {
+    env_vec(key)
+        .into_iter()
+        .filter_map(|s| s.parse().ok())
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     // Server
@@ -55,6 +80,32 @@ pub struct Config {
     pub max_dimension: u32,
     pub min_dimension: u32,
     pub max_radius: u32,
+
+    // Authentication
+    pub require_auth: bool,
+    pub api_keys: HashSet<String>,
+    pub hmac_secret: Option<String>,
+
+    // URL Security
+    pub require_https: bool,
+    pub allowed_domains: HashSet<String>,
+    pub blocked_domains: HashSet<String>,
+
+    // CORS
+    pub cors_enabled: bool,
+    pub cors_allowed_origins: Vec<String>,
+    pub cors_allow_credentials: bool,
+
+    // Referer Validation
+    pub referer_check_enabled: bool,
+    pub allowed_referers: Vec<String>,
+
+    // Rate Limiting
+    pub rate_limit_per_minute: u32,
+    pub rate_limit_by_key: bool,
+
+    // Trusted Proxies (for X-Forwarded-For)
+    pub trusted_proxies: Vec<IpNetwork>,
 
     // HTTP Agent
     pub agent_connect_timeout: Duration,
@@ -81,6 +132,7 @@ pub struct Config {
 
     // Download
     pub max_download_size: usize,
+    pub max_output_size: usize,
 
     // Cache
     pub output_cache_size_mb: u64,
@@ -94,13 +146,16 @@ pub struct Config {
     // Output
     pub webp_quality: u8,
     pub webp_effort: u8,
+
+    // Logging
+    pub enable_request_logging: bool,
 }
 
 impl Config {
     pub fn from_env() -> Self {
         Self {
             // Server
-            port: env_u32("PORT", 80) as u16,
+            port: env_u32("PORT", 8080) as u16,
             connection_timeout: Duration::from_millis(env_u64("CONNECTION_TIMEOUT", 5000)),
             body_limit: env_u64("BODY_LIMIT", 1024) as usize,
             request_timeout: Duration::from_millis(env_u64("REQUEST_TIMEOUT_MS", 30000)),
@@ -114,6 +169,32 @@ impl Config {
             min_dimension: env_u32("MIN_DIMENSION", 1),
             max_radius: env_u32("MAX_RADIUS", 4000),
 
+            // Authentication
+            require_auth: env_bool("REQUIRE_AUTH", false),
+            api_keys: env_hash_set("API_KEYS"),
+            hmac_secret: env::var("HMAC_SECRET").ok().filter(|s| !s.is_empty()),
+
+            // URL Security
+            require_https: env_bool("REQUIRE_HTTPS", false),
+            allowed_domains: env_hash_set("ALLOWED_DOMAINS"),
+            blocked_domains: env_hash_set("BLOCKED_DOMAINS"),
+
+            // CORS
+            cors_enabled: env_bool("CORS_ENABLED", false),
+            cors_allowed_origins: env_vec("CORS_ALLOWED_ORIGINS"),
+            cors_allow_credentials: env_bool("CORS_ALLOW_CREDENTIALS", false),
+
+            // Referer Validation
+            referer_check_enabled: env_bool("REFERER_CHECK_ENABLED", false),
+            allowed_referers: env_vec("ALLOWED_REFERERS"),
+
+            // Rate Limiting
+            rate_limit_per_minute: env_u32("RATE_LIMIT_PER_MINUTE", 100),
+            rate_limit_by_key: env_bool("RATE_LIMIT_BY_KEY", false),
+
+            // Trusted Proxies
+            trusted_proxies: env_ip_networks("TRUSTED_PROXIES"),
+
             // HTTP Agent
             agent_connect_timeout: Duration::from_millis(env_u64("AGENT_CONNECT_TIMEOUT", 10000)),
             agent_headers_timeout: Duration::from_millis(env_u64("AGENT_HEADERS_TIMEOUT", 10000)),
@@ -122,7 +203,7 @@ impl Config {
             agent_pipelining: env_u64("AGENT_PIPELINING", 10) as usize,
             agent_keepalive_timeout: Duration::from_millis(env_u64("AGENT_KEEPALIVE_TIMEOUT", 30000)),
             agent_keepalive_max_timeout: Duration::from_millis(env_u64("AGENT_KEEPALIVE_MAX_TIMEOUT", 60000)),
-            agent_reject_unauthorized: env_bool("AGENT_REJECT_UNAUTHORIZED", false),
+            agent_reject_unauthorized: env_bool("AGENT_REJECT_UNAUTHORIZED", true),
 
             // Fetch timeouts
             fetch_timeout_main: Duration::from_millis(env_u64("FETCH_TIMEOUT_MAIN", 15000)),
@@ -139,6 +220,7 @@ impl Config {
 
             // Download
             max_download_size: env_u64("MAX_DOWNLOAD_SIZE_MB", 10) as usize * 1024 * 1024,
+            max_output_size: env_u64("MAX_OUTPUT_SIZE_MB", 5) as usize * 1024 * 1024,
 
             // Cache
             output_cache_size_mb: env_u64("OUTPUT_CACHE_SIZE_MB", 750),
@@ -152,6 +234,9 @@ impl Config {
             // Output
             webp_quality: env_u32("WEBP_QUALITY", 80) as u8,
             webp_effort: env_u32("WEBP_EFFORT", 0) as u8,
+
+            // Logging
+            enable_request_logging: env_bool("ENABLE_REQUEST_LOGGING", true),
         }
     }
 }

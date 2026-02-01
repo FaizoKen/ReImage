@@ -1,15 +1,19 @@
 use bytes::Bytes;
 use once_cell::sync::OnceCell;
 use reqwest::{Client, StatusCode};
+use std::collections::HashSet;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 
 use crate::config::Config;
 use crate::http_client::dns::DnsResolver;
-use crate::http_client::retry::{is_permanent_error, is_retryable_error, RetryConfig};
+use crate::http_client::retry::{is_retryable_error, RetryConfig};
 use crate::image::validation::{is_valid_content_type, is_valid_image_buffer};
-use crate::security::url_validator::{validate_resolved_ip, validate_url_format};
+use crate::security::url_validator::{
+    validate_resolved_ip, validate_url_format_with_options, UrlValidationOptions,
+};
 
 static HTTP_CLIENT: OnceCell<Arc<HttpClient>> = OnceCell::new();
 
@@ -28,13 +32,15 @@ pub struct HttpClient {
     dns_resolver: Arc<DnsResolver>,
     retry_config: RetryConfig,
     max_download_size: usize,
-    max_url_length: usize,
+    validation_options: UrlValidationOptions,
     fetch_timeout_main: Duration,
     fetch_timeout_overlay: Duration,
 }
 
 impl HttpClient {
     pub fn new(config: &Config) -> Self {
+        // Note: We perform DNS resolution ourselves for SSRF protection
+        // and pass the resolved IP to requests via the resolve() method per-request
         let client = Client::builder()
             .connect_timeout(config.agent_connect_timeout)
             .timeout(config.agent_body_timeout)
@@ -55,37 +61,71 @@ impl HttpClient {
             config.fetch_retry_backoff_multiplier,
         );
 
+        // Build URL validation options
+        let validation_options = UrlValidationOptions::new(config.max_url_length)
+            .with_https_only(config.require_https)
+            .with_allowed_domains(config.allowed_domains.clone())
+            .with_blocked_domains(config.blocked_domains.clone());
+
         Self {
             client,
             dns_resolver,
             retry_config,
             max_download_size: config.max_download_size,
-            max_url_length: config.max_url_length,
+            validation_options,
             fetch_timeout_main: config.fetch_timeout_main,
             fetch_timeout_overlay: config.fetch_timeout_overlay,
         }
     }
 
+    /// Create a client with DNS pinning for a specific hostname -> IP mapping
+    /// This prevents DNS rebinding attacks
+    fn create_pinned_client(
+        &self,
+        hostname: &str,
+        resolved_ip: IpAddr,
+        port: u16,
+    ) -> Client {
+        let socket_addr = SocketAddr::new(resolved_ip, port);
+
+        Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
+            .user_agent("ImageProxy/1.0")
+            // Pin DNS: force this hostname to resolve to our validated IP
+            .resolve(hostname, socket_addr)
+            .gzip(true)
+            .deflate(true)
+            .build()
+            .unwrap_or_else(|_| self.client.clone())
+    }
+
     /// Fetch image from URL with retry logic
     pub async fn fetch_image(&self, url: &str, is_overlay: bool) -> Result<Bytes, FetchError> {
-        // Validate URL format first
-        let validation = validate_url_format(url, self.max_url_length);
+        // Validate URL format first (includes HTTPS-only and domain checks)
+        let validation = validate_url_format_with_options(url, &self.validation_options);
         if !validation.valid {
             return Err(FetchError::Permanent(
                 validation.reason.unwrap_or_else(|| "Invalid URL".to_string()),
             ));
         }
 
+        let parsed_url = validation.url.unwrap();
         let hostname = validation.hostname.unwrap();
 
-        // Resolve DNS and validate IP
-        let ip = self
+        // Resolve DNS and validate IP (SSRF protection)
+        let resolved_ip = self
             .dns_resolver
             .lookup(&hostname)
             .await
             .map_err(|e| FetchError::Permanent(e))?;
 
-        validate_resolved_ip(ip).map_err(|e| FetchError::Permanent(e))?;
+        validate_resolved_ip(resolved_ip).map_err(|e| FetchError::Permanent(e))?;
+
+        // Get the port from the URL
+        let port = parsed_url.port_or_known_default().unwrap_or(
+            if parsed_url.scheme() == "https" { 443 } else { 80 }
+        );
 
         // Perform fetch with retry
         let timeout = if is_overlay {
@@ -108,7 +148,9 @@ impl HttpClient {
                 sleep(delay).await;
             }
 
-            match self.fetch_once(url, timeout).await {
+            // DNS rebinding protection: use the resolved IP directly
+            // This prevents DNS rebinding attacks where DNS returns a different IP on retry
+            match self.fetch_once_with_resolved_ip(url, &hostname, resolved_ip, port, timeout).await {
                 Ok(buffer) => {
                     if attempt > 0 {
                         tracing::info!(url = url, attempt = attempt, "Image fetch succeeded after retry");
@@ -149,8 +191,22 @@ impl HttpClient {
         Err(last_error)
     }
 
-    async fn fetch_once(&self, url: &str, timeout: Duration) -> Result<Bytes, FetchError> {
-        let response = tokio::time::timeout(timeout, self.client.get(url).send())
+    /// Fetch with DNS rebinding protection
+    /// Uses the pre-resolved IP to prevent DNS rebinding attacks
+    async fn fetch_once_with_resolved_ip(
+        &self,
+        url: &str,
+        hostname: &str,
+        resolved_ip: IpAddr,
+        port: u16,
+        timeout: Duration,
+    ) -> Result<Bytes, FetchError> {
+        // Create a client with DNS pinned to our validated IP
+        // This prevents DNS rebinding attacks where a malicious DNS server
+        // returns a public IP first, then a private IP on subsequent queries
+        let pinned_client = self.create_pinned_client(hostname, resolved_ip, port);
+
+        let response = tokio::time::timeout(timeout, pinned_client.get(url).send())
             .await
             .map_err(|_| FetchError::Transient("Request timeout".to_string()))?
             .map_err(|e| {
