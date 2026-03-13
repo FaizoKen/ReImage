@@ -54,7 +54,7 @@ RUN addgroup -g 1001 -S appgroup && \
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /app/target/release/reimage-rust /app/reimage-rust
+COPY --from=builder /app/target/release/reimage /app/reimage
 
 # Set ownership
 RUN chown -R appuser:appgroup /app
@@ -78,4 +78,4 @@ ENV AGENT_REJECT_UNAUTHORIZED=true
 ENV ENABLE_REQUEST_LOGGING=true
 
 # Run the binary
-CMD ["./reimage-rust"]
+CMD ["./reimage"]
