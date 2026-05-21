@@ -187,11 +187,16 @@ pub fn composite_overlay(
     let (overlay_width, overlay_height) = overlay_rgba.dimensions();
     let (base_width, base_height) = base.dimensions();
 
-    // Pre-compute bounds to avoid repeated checks
+    // Pre-compute bounds to avoid repeated checks.
+    // For negative offsets the overlay starts above/left of the canvas, so the
+    // visible window extends `base_dim + |offset|` into the overlay — not just
+    // `base_dim`. Use the unified formula `base_dim - offset` which handles
+    // both positive and negative `offset` correctly (clamped to non-negative
+    // for safety against far-right/far-down placements).
     let start_ox = if x < 0 { (-x) as u32 } else { 0 };
     let start_oy = if y < 0 { (-y) as u32 } else { 0 };
-    let end_ox = overlay_width.min(if x < 0 { base_width } else { (base_width as i64 - x) as u32 });
-    let end_oy = overlay_height.min(if y < 0 { base_height } else { (base_height as i64 - y) as u32 });
+    let end_ox = overlay_width.min((base_width as i64 - x).max(0) as u32);
+    let end_oy = overlay_height.min((base_height as i64 - y).max(0) as u32);
 
     // Early exit if overlay is completely outside
     if start_ox >= end_ox || start_oy >= end_oy {
@@ -458,5 +463,25 @@ mod tests {
 
         // Upscaling allowed
         assert_eq!(calculate_dimensions(100, 50, Some(200), None), (200, 100));
+    }
+
+    #[test]
+    fn composite_overlay_negative_offset_does_not_clip_visible_area() {
+        // Regression: when an overlay is placed at negative coordinates (as the
+        // `odeco` decoration does to keep the visible image at the caller's
+        // (x, y)), the renderer previously capped the read window at the base
+        // canvas size, clipping the bottom/right of the visible overlay.
+        let mut base = RgbaImage::from_pixel(40, 40, image::Rgba([0, 0, 0, 255]));
+        let overlay = DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            60,
+            60,
+            image::Rgba([255, 0, 0, 255]),
+        ));
+        // Place overlay so its centre 40x40 covers the canvas: padding of 10 on each side.
+        composite_overlay(&mut base, &overlay, -10, -10);
+        // Every canvas pixel must now be red — none of the visible window is lost.
+        for px in base.pixels() {
+            assert_eq!(px.0, [255, 0, 0, 255]);
+        }
     }
 }
