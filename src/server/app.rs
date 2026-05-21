@@ -14,7 +14,7 @@ use crate::server::middleware::{
     auth_middleware, cors_middleware, rate_limit_middleware, referer_middleware,
     request_logging_middleware, security_headers_middleware,
 };
-use crate::server::routes::{favicon, handle_image, health, robots_txt, AppState};
+use crate::server::routes::{favicon, handle_gradient, handle_image, health, robots_txt, AppState};
 
 /// Create the Axum application router
 pub fn create_app(config: Arc<Config>) -> Router {
@@ -47,6 +47,7 @@ pub fn create_app(config: Arc<Config>) -> Router {
     // Build router with all middleware layers
     Router::new()
         .route("/image", get(handle_image))
+        .route("/gradient", get(handle_gradient))
         .route("/health", get(health))
         .route("/robots.txt", get(robots_txt))
         .route("/favicon.ico", get(favicon))
