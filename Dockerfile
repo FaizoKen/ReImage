@@ -22,15 +22,21 @@ COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && \
     echo "fn main() {}" > src/main.rs
 
-# Build dependencies only (cached layer)
+# Build dependencies only (cached layer). The cleanup pattern must match the
+# real crate name `reimage` (see Cargo.toml) or the stub artifacts persist and
+# cargo will reuse the empty-main binary on the next build.
 RUN cargo build --release && \
-    rm -rf src target/release/deps/reimage_rust*
+    rm -rf src target/release/reimage target/release/deps/reimage-*
 
 # Copy actual source code
 COPY src ./src
 
-# Build the application
-RUN cargo build --release
+# Force a clean build of the application (touch main.rs so cargo definitely
+# rebuilds, and verify the resulting binary is not a stub).
+RUN touch src/main.rs && \
+    cargo build --release && \
+    test "$(stat -c%s target/release/reimage)" -gt 1000000 \
+      || (echo "ERROR: built binary is suspiciously small — stub leak?" && exit 1)
 
 # Stage 2: Runtime
 FROM alpine:3.19
