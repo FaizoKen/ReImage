@@ -294,12 +294,12 @@ pub fn composite_overlay(
     }
 }
 
-/// Sizing parameters for overlay ring + shadow, scaled proportionally to overlay size.
-/// Approximates the look of Tailwind `ring-2 ring-indigo-400/70 shadow-lg` from the
-/// ImageComposerModal preview, expressed as fractions of the overlay's shorter side.
+/// Sizing parameters for the overlay's drop shadow, scaled mildly to overlay size.
+/// Matches the modal's CSS `drop-shadow(0 4px 8px rgba(0,0,0,0.5))` at typical
+/// avatar sizes (~128 px) and grows gently from there. No ring — the modal
+/// preview is shadow-only.
 #[derive(Debug, Clone, Copy)]
 pub struct DecorationParams {
-    pub ring_width: u32,
     pub shadow_offset_y: i32,
     pub shadow_blur_sigma: f32,
 }
@@ -307,32 +307,37 @@ pub struct DecorationParams {
 impl DecorationParams {
     pub fn from_overlay_size(width: u32, height: u32) -> Self {
         let size = width.min(height).max(1);
-        let ring_width = ((size + 32) / 64).max(2);
-        let shadow_offset_y = ((size / 10) as i32).max(4);
-        let shadow_blur_sigma = (size as f32 / 14.0).max(4.0);
+        // Modal preview uses fixed 4px offset / 8px blur (sigma ≈ 4). Scale
+        // very gently so larger overlays still get a visible shadow without
+        // looking heavy.
+        let shadow_offset_y = ((size / 32) as i32).max(4);
+        let shadow_blur_sigma = (size as f32 / 24.0).max(4.0);
         Self {
-            ring_width,
             shadow_offset_y,
             shadow_blur_sigma,
         }
     }
 
-    /// Symmetric padding around the overlay needed to fit shadow + ring without clipping.
+    /// Symmetric padding around the overlay needed to fit shadow without clipping.
     pub fn padding(&self) -> u32 {
         let blur_radius = (self.shadow_blur_sigma * 2.5).ceil() as u32;
-        blur_radius + self.shadow_offset_y.unsigned_abs() + self.ring_width + 2
+        blur_radius + self.shadow_offset_y.unsigned_abs() + 2
     }
 }
 
-/// Indigo-400 at 70% opacity — matches `ring-indigo-400/70` from Tailwind.
-const RING_COLOR: [u8; 3] = [129, 140, 248];
-const RING_ALPHA: u8 = 178;
-/// Approximation of `shadow-lg`'s composite alpha (≈15% black with soft falloff).
-const SHADOW_TINT_ALPHA: u32 = 38;
+/// Drop-shadow tint alpha before Gaussian spread (matches modal's 50%-black
+/// drop-shadow once the blur disperses it).
+const SHADOW_TINT_ALPHA: u32 = 128;
 
-/// Apply a Tailwind-style ring + drop shadow to an overlay image. Returns the
-/// decorated image and the (x, y) padding added — callers should subtract this
-/// from the overlay's render position so the visible image stays in place.
+/// Apply a drop shadow to an overlay image. Returns the decorated image and
+/// the (x, y) padding added — callers should subtract this from the overlay's
+/// render position so the visible image stays in place.
+///
+/// Matches the modal's CSS `drop-shadow(0 4px 8px rgba(0,0,0,0.5))`. The
+/// indigo ring that previously wrapped the overlay was removed because the
+/// modal preview no longer shows it (button label is now just "Shadow"); the
+/// ring produced a visible halo in the rendered output that didn't appear in
+/// the preview.
 pub fn apply_overlay_decorations(
     overlay: &DynamicImage,
     params: &DecorationParams,
@@ -388,79 +393,10 @@ pub fn apply_overlay_decorations(
     }
     let shadow_blurred = image::imageops::blur(&shadow_layer, params.shadow_blur_sigma);
 
-    // 2. Ring: pixels outside the overlay shape that are within ring_width of any
-    //    shape pixel. Uses the overlay's alpha (threshold) as the shape mask.
-    let mask: Vec<bool> = overlay_rgba
-        .as_raw()
-        .par_chunks(4)
-        .map(|px| px[3] > 128)
-        .collect();
-
-    let rw = params.ring_width as i32;
-    let rw_sq = rw * rw;
-    let ow_i = ow as i32;
-    let oh_i = oh as i32;
-    let pad_i = pad as i32;
-
-    let mut ring_layer = RgbaImage::new(new_w, new_h);
-    let stride = new_w as usize * 4;
-    let ring_dst: &mut [u8] = ring_layer.as_mut();
-    ring_dst
-        .par_chunks_mut(stride)
-        .enumerate()
-        .for_each(|(cy, row)| {
-            let my = cy as i32 - pad_i;
-            for cx in 0..new_w {
-                let mx = cx as i32 - pad_i;
-                let inside = mx >= 0
-                    && mx < ow_i
-                    && my >= 0
-                    && my < oh_i
-                    && mask[(my as usize) * ow as usize + mx as usize];
-                if inside {
-                    continue;
-                }
-                let mut hit = false;
-                'search: for dy in -rw..=rw {
-                    let ny = my + dy;
-                    if ny < 0 || ny >= oh_i {
-                        continue;
-                    }
-                    let dy_sq = dy * dy;
-                    if dy_sq > rw_sq {
-                        continue;
-                    }
-                    let max_dx_sq = rw_sq - dy_sq;
-                    for dx in -rw..=rw {
-                        if dx * dx > max_dx_sq {
-                            continue;
-                        }
-                        let nx = mx + dx;
-                        if nx < 0 || nx >= ow_i {
-                            continue;
-                        }
-                        if mask[(ny as usize) * ow as usize + nx as usize] {
-                            hit = true;
-                            break 'search;
-                        }
-                    }
-                }
-                if hit {
-                    let i = cx as usize * 4;
-                    row[i] = RING_COLOR[0];
-                    row[i + 1] = RING_COLOR[1];
-                    row[i + 2] = RING_COLOR[2];
-                    row[i + 3] = RING_ALPHA;
-                }
-            }
-        });
-
-    // 3. Composite: shadow → ring → overlay. The overlay's own alpha covers the
-    //    inner part of the ring, leaving only the outer 2-ish px visible — matching
-    //    Tailwind's `ring-2` which sits outside the rounded-corner box.
+    // Composite: shadow → overlay. The overlay's own pixels cover the shadow
+    // silhouette beneath it, leaving only the offset/blurred tail visible.
     let mut canvas = RgbaImage::new(new_w, new_h);
     composite_rgba(&mut canvas, &shadow_blurred);
-    composite_rgba(&mut canvas, &ring_layer);
     composite_overlay(&mut canvas, overlay, pad as i64, pad as i64);
 
     Ok((DynamicImage::ImageRgba8(canvas), pad, pad))

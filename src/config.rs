@@ -81,6 +81,22 @@ pub struct Config {
     pub min_dimension: u32,
     pub max_radius: u32,
 
+    /// Hard cap on the `/image` endpoint's `maxw[]` parameter (background
+    /// resize target width). Tighter than `max_dimension` — typically the
+    /// largest width any caller has any real reason to request.
+    pub max_bg_width: u32,
+
+    /// Hard cap on each `omaxw[]` / `omaxh[]` parameter (overlay resize
+    /// target). Overlays are usually avatars (≤256 px); larger values waste
+    /// CPU and bandwidth.
+    pub max_overlay_size: u32,
+
+    /// Hard caps for the `/gradient` endpoint, independent of the per-image
+    /// `max_dimension`. Gradients are decorative defaults and don't need to
+    /// be large; capping them prevents wasted CPU on absurd requests.
+    pub gradient_max_width: u32,
+    pub gradient_max_height: u32,
+
     // Authentication
     pub require_auth: bool,
     pub api_keys: HashSet<String>,
@@ -90,6 +106,13 @@ pub struct Config {
     pub require_https: bool,
     pub allowed_domains: HashSet<String>,
     pub blocked_domains: HashSet<String>,
+
+    /// Public hostname this server answers on (e.g. `reimage.faizo.net`). When
+    /// a fetch target's host matches this, we rewrite the upstream URL to
+    /// `http://127.0.0.1:{port}` so the request never leaves the box —
+    /// avoiding a Cloudflare round-trip when our own output (e.g. /gradient)
+    /// is used as `src` for /image. Set via SELF_HOST env var. None disables.
+    pub self_host: Option<String>,
 
     // CORS
     pub cors_enabled: bool,
@@ -168,6 +191,10 @@ impl Config {
             max_dimension: env_u32("MAX_DIMENSION", 8000),
             min_dimension: env_u32("MIN_DIMENSION", 1),
             max_radius: env_u32("MAX_RADIUS", 4000),
+            max_bg_width: env_u32("MAX_BG_WIDTH", 480),
+            max_overlay_size: env_u32("MAX_OVERLAY_SIZE", 256),
+            gradient_max_width: env_u32("GRADIENT_MAX_WIDTH", 480),
+            gradient_max_height: env_u32("GRADIENT_MAX_HEIGHT", 160),
 
             // Authentication
             require_auth: env_bool("REQUIRE_AUTH", false),
@@ -178,6 +205,10 @@ impl Config {
             require_https: env_bool("REQUIRE_HTTPS", false),
             allowed_domains: env_hash_set("ALLOWED_DOMAINS"),
             blocked_domains: env_hash_set("BLOCKED_DOMAINS"),
+            self_host: env::var("SELF_HOST")
+                .ok()
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty()),
 
             // CORS
             cors_enabled: env_bool("CORS_ENABLED", false),

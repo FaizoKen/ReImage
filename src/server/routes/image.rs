@@ -121,15 +121,38 @@ impl ImageQuery {
             return Err(AppError::BadRequest("Invalid source URL".to_string()));
         }
 
-        // Validate dimensions
+        // Validate dimensions. `maxw` (background) uses its own tighter cap
+        // — composed images we ship to Discord never need to be huge.
         if let Some(w) = self.maxw() {
-            if w < config.min_dimension || w > config.max_dimension {
-                return Err(AppError::BadRequest("Invalid maxw parameter".to_string()));
+            if w < config.min_dimension || w > config.max_bg_width {
+                return Err(AppError::BadRequest(format!(
+                    "maxw out of range (1..={})",
+                    config.max_bg_width
+                )));
             }
         }
         if let Some(h) = self.maxh() {
             if h < config.min_dimension || h > config.max_dimension {
                 return Err(AppError::BadRequest("Invalid maxh parameter".to_string()));
+            }
+        }
+
+        // Overlay sizes: cap each entry tighter than `max_dimension`. Avatars
+        // are the common case and never need to be larger than the background.
+        for &w in &self.omaxw {
+            if w < config.min_dimension || w > config.max_overlay_size {
+                return Err(AppError::BadRequest(format!(
+                    "omaxw out of range (1..={})",
+                    config.max_overlay_size
+                )));
+            }
+        }
+        for &h in &self.omaxh {
+            if h < config.min_dimension || h > config.max_overlay_size {
+                return Err(AppError::BadRequest(format!(
+                    "omaxh out of range (1..={})",
+                    config.max_overlay_size
+                )));
             }
         }
 

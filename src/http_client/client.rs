@@ -35,6 +35,12 @@ pub struct HttpClient {
     validation_options: UrlValidationOptions,
     fetch_timeout_main: Duration,
     fetch_timeout_overlay: Duration,
+    /// Lowercased SELF_HOST (e.g. `reimage.faizo.net`) used to short-circuit
+    /// fetches that target our own public hostname, bypassing the Cloudflare
+    /// round-trip. None disables the optimisation.
+    self_host: Option<String>,
+    /// Local port the axum server is listening on — paired with self_host.
+    self_port: u16,
 }
 
 impl HttpClient {
@@ -75,6 +81,8 @@ impl HttpClient {
             validation_options,
             fetch_timeout_main: config.fetch_timeout_main,
             fetch_timeout_overlay: config.fetch_timeout_overlay,
+            self_host: config.self_host.clone(),
+            self_port: config.port,
         }
     }
 
@@ -112,6 +120,31 @@ impl HttpClient {
 
         let parsed_url = validation.url.unwrap();
         let hostname = validation.hostname.unwrap();
+
+        // Same-host short-circuit: if this URL targets our own public hostname,
+        // bypass DNS + Cloudflare and fetch the rewritten URL over loopback.
+        // /image is excluded to prevent self-recursive loops.
+        if let Some(rewrite) =
+            maybe_rewrite_self(&parsed_url, &hostname, self.self_host.as_deref(), self.self_port)?
+        {
+            let timeout = if is_overlay {
+                self.fetch_timeout_overlay
+            } else {
+                self.fetch_timeout_main
+            };
+            let loopback_ip: IpAddr = "127.0.0.1".parse().unwrap();
+            // No retries on the loopback hop — failures here are local-router
+            // rejections, retrying won't help.
+            return self
+                .fetch_once_with_resolved_ip(
+                    &rewrite,
+                    "127.0.0.1",
+                    loopback_ip,
+                    self.self_port,
+                    timeout,
+                )
+                .await;
+        }
 
         // Resolve DNS and validate IP (SSRF protection)
         let resolved_ip = self
@@ -272,5 +305,130 @@ impl HttpClient {
         HTTP_CLIENT
             .get_or_init(|| Arc::new(HttpClient::new(config)))
             .clone()
+    }
+}
+
+/// If `parsed_url` targets our own public hostname, return a loopback-rewritten
+/// URL string (`http://127.0.0.1:{self_port}{path?query}`). Returns `Ok(None)`
+/// when `self_host` is unset or the URL targets a different host. Returns
+/// `Err(Permanent)` if the URL targets our own `/image` endpoint (recursive
+/// loop guard).
+///
+/// Pure function — extracted so the rewrite logic can be unit-tested without
+/// spinning up a server.
+fn maybe_rewrite_self(
+    parsed_url: &url::Url,
+    hostname: &str,
+    self_host: Option<&str>,
+    self_port: u16,
+) -> Result<Option<String>, FetchError> {
+    let Some(self_host) = self_host else {
+        return Ok(None);
+    };
+    if !hostname.eq_ignore_ascii_case(self_host) {
+        return Ok(None);
+    }
+    if parsed_url.path() == "/image" {
+        return Err(FetchError::Permanent(
+            "self-recursive /image fetch not allowed".to_string(),
+        ));
+    }
+    let path_and_query = match parsed_url.query() {
+        Some(q) => format!("{}?{}", parsed_url.path(), q),
+        None => parsed_url.path().to_string(),
+    };
+    Ok(Some(format!(
+        "http://127.0.0.1:{}{}",
+        self_port, path_and_query
+    )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use url::Url;
+
+    fn parse(u: &str) -> Url {
+        Url::parse(u).unwrap()
+    }
+
+    #[test]
+    fn rewrite_skipped_when_self_host_unset() {
+        let url = parse("https://reimage.faizo.net/gradient?c=5865F2");
+        let out = maybe_rewrite_self(&url, "reimage.faizo.net", None, 8080).unwrap();
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn rewrite_skipped_for_different_host() {
+        let url = parse("https://example.com/image.png");
+        let out = maybe_rewrite_self(
+            &url,
+            "example.com",
+            Some("reimage.faizo.net"),
+            8080,
+        )
+        .unwrap();
+        assert!(out.is_none());
+    }
+
+    #[test]
+    fn rewrite_preserves_path_and_query() {
+        let url = parse("https://reimage.faizo.net/gradient?c=5865F2&w=600");
+        let out = maybe_rewrite_self(
+            &url,
+            "reimage.faizo.net",
+            Some("reimage.faizo.net"),
+            8080,
+        )
+        .unwrap();
+        assert_eq!(
+            out.as_deref(),
+            Some("http://127.0.0.1:8080/gradient?c=5865F2&w=600")
+        );
+    }
+
+    #[test]
+    fn rewrite_handles_no_query() {
+        let url = parse("https://reimage.faizo.net/health");
+        let out = maybe_rewrite_self(
+            &url,
+            "reimage.faizo.net",
+            Some("reimage.faizo.net"),
+            8080,
+        )
+        .unwrap();
+        assert_eq!(out.as_deref(), Some("http://127.0.0.1:8080/health"));
+    }
+
+    #[test]
+    fn rewrite_is_case_insensitive() {
+        let url = parse("https://ReImage.Faizo.Net/gradient?c=ff0000");
+        let out = maybe_rewrite_self(
+            &url,
+            "reimage.faizo.net",
+            Some("REIMAGE.FAIZO.NET"),
+            8080,
+        )
+        .unwrap();
+        assert_eq!(
+            out.as_deref(),
+            Some("http://127.0.0.1:8080/gradient?c=ff0000")
+        );
+    }
+
+    #[test]
+    fn rewrite_rejects_self_image_loop() {
+        let url = parse("https://reimage.faizo.net/image?src=https://example.com/x.png");
+        let result = maybe_rewrite_self(
+            &url,
+            "reimage.faizo.net",
+            Some("reimage.faizo.net"),
+            8080,
+        );
+        match result {
+            Err(FetchError::Permanent(msg)) => assert!(msg.contains("recursive")),
+            other => panic!("expected Permanent error, got {:?}", other),
+        }
     }
 }

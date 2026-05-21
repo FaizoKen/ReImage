@@ -38,10 +38,10 @@ pub struct GradientQuery {
 }
 
 fn default_w() -> u32 {
-    600
+    480
 }
 fn default_h() -> u32 {
-    240
+    160
 }
 
 fn parse_hex(s: &str) -> AppResult<(u8, u8, u8)> {
@@ -75,17 +75,20 @@ pub async fn handle_gradient(
 ) -> Result<impl IntoResponse, AppError> {
     let config = &state.config;
 
-    // Validate dimensions against the same bounds as /image.
+    // Validate dimensions. `/gradient` uses its own caps (configurable via
+    // GRADIENT_MAX_WIDTH / GRADIENT_MAX_HEIGHT) — separate from the much
+    // larger limits the `/image` endpoint allows for real photos.
     let w = query.w;
     let h = query.h;
     if w < config.min_dimension
-        || w > config.max_dimension
+        || w > config.gradient_max_width
         || h < config.min_dimension
-        || h > config.max_dimension
+        || h > config.gradient_max_height
     {
-        return Err(AppError::BadRequest(
-            "invalid w/h parameter".to_string(),
-        ));
+        return Err(AppError::BadRequest(format!(
+            "w/h out of range (w<={}, h<={})",
+            config.gradient_max_width, config.gradient_max_height
+        )));
     }
 
     let c1 = parse_hex(&query.c)?;
@@ -115,7 +118,7 @@ pub async fn handle_gradient(
         ));
     }
 
-    let img = render_diagonal(w, h, c1, c2);
+    let img = render_vertical(w, h, c1, c2);
     let webp = encode_webp(&DynamicImage::ImageRgb8(img), config.webp_quality)?;
     state
         .cache_manager
@@ -136,27 +139,29 @@ pub async fn handle_gradient(
     ))
 }
 
-/// Render a 2-stop diagonal gradient. `t` runs along the top-left → bottom-right
-/// diagonal: `t = (x/(w-1) + y/(h-1)) / 2` ∈ [0, 1].
-fn render_diagonal(
+/// Render a 2-stop vertical gradient. `t` runs purely top-to-bottom:
+/// `t = y / (h-1)` ∈ [0, 1]. Picked over diagonal because for a wide-short
+/// banner (3:1 aspect) the diagonal compresses most of the color range into
+/// the corners and reads as flat; top-to-bottom uses the full c1↔c2 range
+/// across the short axis and matches Discord's banner-preset look.
+fn render_vertical(
     w: u32,
     h: u32,
     c1: (u8, u8, u8),
     c2: (u8, u8, u8),
 ) -> RgbImage {
     let mut img = RgbImage::new(w, h);
-    let wm1 = (w.saturating_sub(1)).max(1) as f32;
     let hm1 = (h.saturating_sub(1)).max(1) as f32;
     let dr = c2.0 as f32 - c1.0 as f32;
     let dg = c2.1 as f32 - c1.1 as f32;
     let db = c2.2 as f32 - c1.2 as f32;
     for y in 0..h {
-        let ty = y as f32 / hm1;
+        // Same colour across the whole row — compute once, copy across.
+        let t = y as f32 / hm1;
+        let r = (c1.0 as f32 + dr * t).round() as u8;
+        let g = (c1.1 as f32 + dg * t).round() as u8;
+        let b = (c1.2 as f32 + db * t).round() as u8;
         for x in 0..w {
-            let t = (x as f32 / wm1 + ty) * 0.5;
-            let r = (c1.0 as f32 + dr * t).round() as u8;
-            let g = (c1.1 as f32 + dg * t).round() as u8;
-            let b = (c1.2 as f32 + db * t).round() as u8;
             img.put_pixel(x, y, image::Rgb([r, g, b]));
         }
     }
