@@ -75,6 +75,8 @@ pub struct ImageQuery {
     pub omaxh: Vec<u32>,
     #[serde(default)]
     pub orad: Vec<u32>,
+    #[serde(default)]
+    pub odeco: Vec<u32>,
 
     #[serde(default)]
     pub text: Vec<String>,
@@ -164,6 +166,7 @@ impl ImageQuery {
             omaxw: self.omaxw.clone(),
             omaxh: self.omaxh.clone(),
             orad: self.orad.clone(),
+            odeco: self.odeco.clone(),
             text: self.text.clone(),
             tx: self.tx.clone(),
             ty: self.ty.clone(),
@@ -260,6 +263,7 @@ pub async fn handle_image(
             max_width: query.omaxw.get(i).copied(),
             max_height: query.omaxh.get(i).copied(),
             radius: query.orad.get(i).copied(),
+            decoration: query.odeco.get(i).copied().unwrap_or(0) != 0,
         })
         .collect();
 

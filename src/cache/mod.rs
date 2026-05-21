@@ -138,6 +138,7 @@ pub fn get_cache_key(params: &ImageParams) -> String {
     params.omaxw.hash(&mut hasher);
     params.omaxh.hash(&mut hasher);
     params.orad.hash(&mut hasher);
+    params.odeco.hash(&mut hasher);
 
     // Hash text parameters
     params.text.hash(&mut hasher);
@@ -167,6 +168,7 @@ pub struct ImageParams {
     pub omaxw: Vec<u32>,
     pub omaxh: Vec<u32>,
     pub orad: Vec<u32>,
+    pub odeco: Vec<u32>,
     pub text: Vec<String>,
     pub tx: Vec<i64>,
     pub ty: Vec<i64>,

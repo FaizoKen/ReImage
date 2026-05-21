@@ -1,11 +1,14 @@
 use bytes::Bytes;
-use image::DynamicImage;
+use image::{DynamicImage, GenericImageView};
 use std::sync::Arc;
 
 use crate::cache::CacheManager;
 use crate::config::Config;
 use crate::http_client::{FetchError, HttpClient};
-use crate::image::processor::{apply_rounded_corners, decode_image, resize_image, calculate_dimensions, get_metadata};
+use crate::image::processor::{
+    apply_overlay_decorations, apply_rounded_corners, calculate_dimensions, decode_image,
+    get_metadata, resize_image, DecorationParams,
+};
 use crate::server::error::{AppError, AppResult};
 
 /// Processed overlay ready for compositing
@@ -25,6 +28,9 @@ pub struct OverlayConfig {
     pub max_width: Option<u32>,
     pub max_height: Option<u32>,
     pub radius: Option<u32>,
+    /// Render a Tailwind-style ring + drop shadow around the overlay, matching
+    /// the ImageComposerModal preview. Adds proportional padding.
+    pub decoration: bool,
 }
 
 /// Process a single overlay (fetch, resize, apply radius)
@@ -34,7 +40,8 @@ pub async fn process_overlay(
     cache_manager: &CacheManager,
     app_config: &Config,
 ) -> AppResult<ProcessedOverlay> {
-    // Generate cache key
+    // Generate cache key for the un-decorated overlay (decoration is applied after
+    // cache hit so we don't need to know the pad offset to use a cached entry).
     let cache_key = format!(
         "{}_{}_{}_{}",
         config.url,
@@ -46,11 +53,7 @@ pub async fn process_overlay(
     // Check overlay cache
     if let Some(cached_bytes) = cache_manager.get_overlay(&cache_key).await {
         let image = decode_image(&cached_bytes)?;
-        return Ok(ProcessedOverlay {
-            image,
-            x: config.x,
-            y: config.y,
-        });
+        return Ok(finalize_overlay(image, config));
     }
 
     // Check source cache first
@@ -105,11 +108,36 @@ pub async fn process_overlay(
     // Cache processed overlay
     cache_manager.set_overlay(cache_key, Bytes::from(png_bytes)).await;
 
-    Ok(ProcessedOverlay {
-        image,
-        x: config.x,
-        y: config.y,
-    })
+    Ok(finalize_overlay(image, config))
+}
+
+/// Apply ring + drop shadow decoration (if requested) and adjust the overlay's
+/// render position so the visible image stays at the caller-specified (x, y).
+fn finalize_overlay(image: DynamicImage, config: &OverlayConfig) -> ProcessedOverlay {
+    if !config.decoration {
+        return ProcessedOverlay {
+            image,
+            x: config.x,
+            y: config.y,
+        };
+    }
+    let (w, h) = image.dimensions();
+    let params = DecorationParams::from_overlay_size(w, h);
+    match apply_overlay_decorations(&image, &params) {
+        Ok((decorated, pad_x, pad_y)) => ProcessedOverlay {
+            image: decorated,
+            x: config.x - pad_x as i64,
+            y: config.y - pad_y as i64,
+        },
+        Err(e) => {
+            tracing::warn!("Overlay decoration failed, falling back to plain overlay: {:?}", e);
+            ProcessedOverlay {
+                image,
+                x: config.x,
+                y: config.y,
+            }
+        }
+    }
 }
 
 /// Process multiple overlays in parallel

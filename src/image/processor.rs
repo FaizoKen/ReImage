@@ -294,6 +294,218 @@ pub fn composite_overlay(
     }
 }
 
+/// Sizing parameters for overlay ring + shadow, scaled proportionally to overlay size.
+/// Approximates the look of Tailwind `ring-2 ring-indigo-400/70 shadow-lg` from the
+/// ImageComposerModal preview, expressed as fractions of the overlay's shorter side.
+#[derive(Debug, Clone, Copy)]
+pub struct DecorationParams {
+    pub ring_width: u32,
+    pub shadow_offset_y: i32,
+    pub shadow_blur_sigma: f32,
+}
+
+impl DecorationParams {
+    pub fn from_overlay_size(width: u32, height: u32) -> Self {
+        let size = width.min(height).max(1);
+        let ring_width = ((size + 32) / 64).max(2);
+        let shadow_offset_y = ((size / 10) as i32).max(4);
+        let shadow_blur_sigma = (size as f32 / 14.0).max(4.0);
+        Self {
+            ring_width,
+            shadow_offset_y,
+            shadow_blur_sigma,
+        }
+    }
+
+    /// Symmetric padding around the overlay needed to fit shadow + ring without clipping.
+    pub fn padding(&self) -> u32 {
+        let blur_radius = (self.shadow_blur_sigma * 2.5).ceil() as u32;
+        blur_radius + self.shadow_offset_y.unsigned_abs() + self.ring_width + 2
+    }
+}
+
+/// Indigo-400 at 70% opacity — matches `ring-indigo-400/70` from Tailwind.
+const RING_COLOR: [u8; 3] = [129, 140, 248];
+const RING_ALPHA: u8 = 178;
+/// Approximation of `shadow-lg`'s composite alpha (≈15% black with soft falloff).
+const SHADOW_TINT_ALPHA: u32 = 38;
+
+/// Apply a Tailwind-style ring + drop shadow to an overlay image. Returns the
+/// decorated image and the (x, y) padding added — callers should subtract this
+/// from the overlay's render position so the visible image stays in place.
+pub fn apply_overlay_decorations(
+    overlay: &DynamicImage,
+    params: &DecorationParams,
+) -> AppResult<(DynamicImage, u32, u32)> {
+    let (ow, oh) = overlay.dimensions();
+    if ow == 0 || oh == 0 {
+        return Ok((overlay.clone(), 0, 0));
+    }
+
+    let pad = params.padding();
+    let new_w = ow + pad * 2;
+    let new_h = oh + pad * 2;
+
+    let overlay_rgba = match overlay {
+        DynamicImage::ImageRgba8(rgba) => rgba.clone(),
+        other => other.to_rgba8(),
+    };
+
+    // 1. Shadow silhouette: copy alpha into a black layer, offset down by shadow_offset_y.
+    let mut shadow_layer = RgbaImage::new(new_w, new_h);
+    {
+        let shadow_off_x = pad as i32;
+        let shadow_off_y = pad as i32 + params.shadow_offset_y;
+        let stride = new_w as usize * 4;
+        let src = overlay_rgba.as_raw();
+        let dst: &mut [u8] = shadow_layer.as_mut();
+
+        dst.par_chunks_mut(stride)
+            .enumerate()
+            .for_each(|(cy, row)| {
+                let oy = cy as i32 - shadow_off_y;
+                if oy < 0 || oy >= oh as i32 {
+                    return;
+                }
+                let src_row_start = (oy as usize) * ow as usize * 4;
+                for ox in 0..ow {
+                    let cx = ox as i32 + shadow_off_x;
+                    if cx < 0 || cx >= new_w as i32 {
+                        continue;
+                    }
+                    let src_a = src[src_row_start + ox as usize * 4 + 3] as u32;
+                    if src_a == 0 {
+                        continue;
+                    }
+                    let a = (src_a * SHADOW_TINT_ALPHA / 255) as u8;
+                    let i = cx as usize * 4;
+                    row[i] = 0;
+                    row[i + 1] = 0;
+                    row[i + 2] = 0;
+                    row[i + 3] = a;
+                }
+            });
+    }
+    let shadow_blurred = image::imageops::blur(&shadow_layer, params.shadow_blur_sigma);
+
+    // 2. Ring: pixels outside the overlay shape that are within ring_width of any
+    //    shape pixel. Uses the overlay's alpha (threshold) as the shape mask.
+    let mask: Vec<bool> = overlay_rgba
+        .as_raw()
+        .par_chunks(4)
+        .map(|px| px[3] > 128)
+        .collect();
+
+    let rw = params.ring_width as i32;
+    let rw_sq = rw * rw;
+    let ow_i = ow as i32;
+    let oh_i = oh as i32;
+    let pad_i = pad as i32;
+
+    let mut ring_layer = RgbaImage::new(new_w, new_h);
+    let stride = new_w as usize * 4;
+    let ring_dst: &mut [u8] = ring_layer.as_mut();
+    ring_dst
+        .par_chunks_mut(stride)
+        .enumerate()
+        .for_each(|(cy, row)| {
+            let my = cy as i32 - pad_i;
+            for cx in 0..new_w {
+                let mx = cx as i32 - pad_i;
+                let inside = mx >= 0
+                    && mx < ow_i
+                    && my >= 0
+                    && my < oh_i
+                    && mask[(my as usize) * ow as usize + mx as usize];
+                if inside {
+                    continue;
+                }
+                let mut hit = false;
+                'search: for dy in -rw..=rw {
+                    let ny = my + dy;
+                    if ny < 0 || ny >= oh_i {
+                        continue;
+                    }
+                    let dy_sq = dy * dy;
+                    if dy_sq > rw_sq {
+                        continue;
+                    }
+                    let max_dx_sq = rw_sq - dy_sq;
+                    for dx in -rw..=rw {
+                        if dx * dx > max_dx_sq {
+                            continue;
+                        }
+                        let nx = mx + dx;
+                        if nx < 0 || nx >= ow_i {
+                            continue;
+                        }
+                        if mask[(ny as usize) * ow as usize + nx as usize] {
+                            hit = true;
+                            break 'search;
+                        }
+                    }
+                }
+                if hit {
+                    let i = cx as usize * 4;
+                    row[i] = RING_COLOR[0];
+                    row[i + 1] = RING_COLOR[1];
+                    row[i + 2] = RING_COLOR[2];
+                    row[i + 3] = RING_ALPHA;
+                }
+            }
+        });
+
+    // 3. Composite: shadow → ring → overlay. The overlay's own alpha covers the
+    //    inner part of the ring, leaving only the outer 2-ish px visible — matching
+    //    Tailwind's `ring-2` which sits outside the rounded-corner box.
+    let mut canvas = RgbaImage::new(new_w, new_h);
+    composite_rgba(&mut canvas, &shadow_blurred);
+    composite_rgba(&mut canvas, &ring_layer);
+    composite_overlay(&mut canvas, overlay, pad as i64, pad as i64);
+
+    Ok((DynamicImage::ImageRgba8(canvas), pad, pad))
+}
+
+/// Alpha-blend one RGBA image onto another of the same dimensions. Source-over.
+fn composite_rgba(base: &mut RgbaImage, top: &RgbaImage) {
+    let (bw, bh) = base.dimensions();
+    let (tw, th) = top.dimensions();
+    debug_assert_eq!((bw, bh), (tw, th));
+    let stride = bw as usize * 4;
+    let top_raw = top.as_raw();
+    let base_raw: &mut [u8] = base.as_mut();
+
+    base_raw
+        .par_chunks_mut(stride)
+        .enumerate()
+        .for_each(|(y, row)| {
+            let src_row_start = y * stride;
+            for x in 0..bw as usize {
+                let si = src_row_start + x * 4;
+                let alpha = top_raw[si + 3] as u32;
+                if alpha == 0 {
+                    continue;
+                }
+                let bi = x * 4;
+                if alpha == 255 {
+                    row[bi] = top_raw[si];
+                    row[bi + 1] = top_raw[si + 1];
+                    row[bi + 2] = top_raw[si + 2];
+                    row[bi + 3] = 255;
+                } else {
+                    let inv = 255 - alpha;
+                    row[bi] = ((top_raw[si] as u32 * alpha + row[bi] as u32 * inv + 127) / 255) as u8;
+                    row[bi + 1] =
+                        ((top_raw[si + 1] as u32 * alpha + row[bi + 1] as u32 * inv + 127) / 255) as u8;
+                    row[bi + 2] =
+                        ((top_raw[si + 2] as u32 * alpha + row[bi + 2] as u32 * inv + 127) / 255) as u8;
+                    row[bi + 3] =
+                        ((alpha * 255 + row[bi + 3] as u32 * inv + 127) / 255).min(255) as u8;
+                }
+            }
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
