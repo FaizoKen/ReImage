@@ -39,17 +39,12 @@ pub struct GradientQuery {
     /// `c` blended toward white.
     #[serde(default)]
     pub c2: Option<String>,
-    #[serde(default = "default_w")]
-    pub w: u32,
-    #[serde(default = "default_h")]
-    pub h: u32,
-}
-
-fn default_w() -> u32 {
-    480
-}
-fn default_h() -> u32 {
-    160
+    /// When omitted, falls back to `GRADIENT_MAX_WIDTH`.
+    #[serde(default)]
+    pub w: Option<u32>,
+    /// When omitted, falls back to `GRADIENT_MAX_HEIGHT`.
+    #[serde(default)]
+    pub h: Option<u32>,
 }
 
 fn parse_hex(s: &str) -> AppResult<(u8, u8, u8)> {
@@ -87,9 +82,12 @@ pub async fn handle_gradient(
 
     // Validate dimensions. `/gradient` uses its own caps (configurable via
     // GRADIENT_MAX_WIDTH / GRADIENT_MAX_HEIGHT) — separate from the much
-    // larger limits the `/image` endpoint allows for real photos.
-    let w = query.w;
-    let h = query.h;
+    // larger limits the `/image` endpoint allows for real photos. When the
+    // caller omits w/h the configured cap doubles as the default so bumping
+    // GRADIENT_MAX_HEIGHT enlarges the rendered banner without forcing every
+    // caller to pass an explicit h=.
+    let w = query.w.unwrap_or(config.gradient_max_width);
+    let h = query.h.unwrap_or(config.gradient_max_height);
     if w < config.min_dimension
         || w > config.gradient_max_width
         || h < config.min_dimension
