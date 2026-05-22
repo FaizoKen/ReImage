@@ -19,12 +19,18 @@ axum = { version = "0.7", features = ["query", "macros"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["timeout"] }
 
-# Image processing. Dropped `bmp` and `tiff` features: neither format is
-# common on the web and decoding them just inflates the binary by ~hundreds
+# Image processing. Dropped `bmp`/`tiff`/`gif` features: none are common
+# on proxied web traffic and decoding them inflates the binary by hundreds
 # of KB. Requests for those content types still fail cleanly via decode err.
-image = { version = "0.25", features = ["webp", "jpeg", "png", "gif", "rayon"] }
+# Dropped `rayon` feature: we use rayon directly for composite/corner work;
+# the image crate's internal parallel ops are not on the hot path.
+image = { version = "0.25", features = ["webp", "jpeg", "png"] }
 webp = "0.3"
 resvg = "0.44"
+
+# SIMD-accelerated resize (SSE4.1/AVX2/NEON). Replaces image::resize_exact
+# on the hot path — typically 3-10x faster at the same visual quality.
+fast_image_resize = { version = "6", features = ["rayon"] }
 
 # Parallel processing for CPU-bound operations
 rayon = "1.10"

@@ -13,11 +13,13 @@ use std::sync::Arc;
 
 use crate::cache::{get_cache_key, CacheManager, ImageParams};
 
-/// Global font database - loaded once and reused for all SVG rendering
-static FONT_DB: Lazy<fontdb::Database> = Lazy::new(|| {
+/// Global font database, pre-wrapped in an Arc. Loaded once at startup;
+/// every SVG render clones the Arc (pointer copy) instead of deep-cloning
+/// the fontdb::Database (which used to allocate per request).
+static FONT_DB: Lazy<Arc<fontdb::Database>> = Lazy::new(|| {
     let mut db = fontdb::Database::new();
     db.load_system_fonts();
-    db
+    Arc::new(db)
 });
 use crate::config::Config;
 use crate::http_client::{FetchError, HttpClient};
@@ -263,17 +265,7 @@ pub async fn handle_image(
         fetched
     };
 
-    // Decode image
-    let base_image = decode_image(&source_buffer)?;
-
-    // Get metadata and validate
-    let (orig_width, orig_height) = get_metadata(&base_image)?;
-
-    // Calculate final dimensions
-    let (final_width, final_height) =
-        calculate_dimensions(orig_width, orig_height, query.maxw(), query.maxh());
-
-    // Process overlays in parallel
+    // Process overlays in parallel (async I/O — fetches stay on the tokio runtime)
     let overlay_configs: Vec<OverlayConfig> = query
         .overlay
         .iter()
@@ -302,7 +294,7 @@ pub async fn handle_image(
         Vec::new()
     };
 
-    // Generate text SVG if needed
+    // Build text configs (cheap, no I/O).
     let text_configs: Vec<TextConfig> = query
         .text
         .iter()
@@ -321,48 +313,69 @@ pub async fn handle_image(
         })
         .collect();
 
-    let text_svg = if !text_configs.is_empty() {
-        Some(generate_text_svg(&text_configs, final_width, final_height, config.max_text_length))
-    } else {
-        None
-    };
-
-    // Process the image
-    let mut result_image = base_image;
-
-    // Resize if needed
-    if query.maxw().is_some() || query.maxh().is_some() {
-        result_image = resize_image(&result_image, final_width, final_height);
-    }
-
-    // Fold rounded-corners + overlay composite + text composite into a single
-    // RGBA conversion. Previously each step allocated its own RGBA buffer.
+    // Hoist values needed inside the blocking section so we don't move
+    // `query`/`config` wholesale (config is an Arc, but it's cleaner to grab
+    // the few primitives the CPU path actually needs).
+    let maxw = query.maxw();
+    let maxh = query.maxh();
     let radius = query.rad().filter(|&r| r > 0);
-    let need_composite = !processed_overlays.is_empty() || text_svg.is_some();
-    if radius.is_some() || need_composite {
-        let mut base_rgba = result_image.to_rgba8();
+    let max_text_length = config.max_text_length;
+    let webp_quality = config.webp_quality;
 
-        if let Some(r) = radius {
-            apply_rounded_corners_inplace(&mut base_rgba, r);
+    // Move all CPU-bound work (decode + resize + composite + text raster +
+    // encode) off the tokio worker so other in-flight requests aren't
+    // starved while one is encoding. tokio's blocking pool handles backpressure.
+    let output = tokio::task::spawn_blocking(move || -> AppResult<Bytes> {
+        let base_image = decode_image(&source_buffer)?;
+        let (orig_width, orig_height) = get_metadata(&base_image)?;
+        let (final_width, final_height) =
+            calculate_dimensions(orig_width, orig_height, maxw, maxh);
+
+        let text_svg = if !text_configs.is_empty() {
+            Some(generate_text_svg(
+                &text_configs,
+                final_width,
+                final_height,
+                max_text_length,
+            ))
+        } else {
+            None
+        };
+
+        let mut result_image = base_image;
+        if maxw.is_some() || maxh.is_some() {
+            result_image = resize_image(&result_image, final_width, final_height);
         }
 
-        // Composite image overlays
-        for overlay in processed_overlays {
-            composite_overlay(&mut base_rgba, &overlay.image, overlay.x, overlay.y);
-        }
+        // Fold rounded-corners + overlay composite + text composite into a
+        // single RGBA conversion. Previously each step allocated its own buffer.
+        let need_composite = !processed_overlays.is_empty() || text_svg.is_some();
+        if radius.is_some() || need_composite {
+            let mut base_rgba = result_image.to_rgba8();
 
-        // Composite text SVG
-        if let Some(svg_bytes) = text_svg {
-            if let Ok(text_image) = render_svg_to_image(&svg_bytes, final_width, final_height) {
-                composite_overlay(&mut base_rgba, &text_image, 0, 0);
+            if let Some(r) = radius {
+                apply_rounded_corners_inplace(&mut base_rgba, r);
             }
+
+            for overlay in &processed_overlays {
+                composite_overlay(&mut base_rgba, &overlay.image, overlay.x, overlay.y);
+            }
+
+            if let Some(svg_bytes) = text_svg {
+                if let Ok(text_image) =
+                    render_svg_to_image(&svg_bytes, final_width, final_height)
+                {
+                    composite_overlay(&mut base_rgba, &text_image, 0, 0);
+                }
+            }
+
+            result_image = DynamicImage::ImageRgba8(base_rgba);
         }
 
-        result_image = DynamicImage::ImageRgba8(base_rgba);
-    }
-
-    // Encode to WebP
-    let output = encode_webp(&result_image, config.webp_quality)?;
+        encode_webp(&result_image, webp_quality)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("CPU task failed: {}", e)))??;
 
     // Cache output
     state.cache_manager.set_output(cache_key, output.clone()).await;
@@ -383,9 +396,9 @@ fn render_svg_to_image(svg_data: &[u8], width: u32, height: u32) -> AppResult<Dy
     use resvg::tiny_skia;
     use resvg::usvg;
 
-    // Use cached font database (loaded once at startup)
+    // Cheap Arc pointer-clone — fontdb stays shared across all requests.
     let options = usvg::Options {
-        fontdb: std::sync::Arc::new(FONT_DB.clone()),
+        fontdb: FONT_DB.clone(),
         ..Default::default()
     };
 

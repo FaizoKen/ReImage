@@ -1,9 +1,8 @@
 use bytes::Bytes;
-use image::{DynamicImage, GenericImageView, ImageFormat, RgbaImage};
+use image::{DynamicImage, GenericImageView, RgbaImage};
 use rayon::prelude::*;
 use std::io::Cursor;
 
-use crate::config::Config;
 use crate::server::error::{AppError, AppResult};
 
 /// Maximum megapixels allowed (decompression bomb protection)
@@ -73,37 +72,70 @@ pub fn calculate_dimensions(
 
 /// Resize image maintaining aspect ratio.
 ///
-/// Uses CatmullRom (bicubic) by default — for the avatar / banner thumbnails
-/// this service produces, it's visually indistinguishable from Lanczos3 but
-/// roughly 3× faster on large downscales. Lanczos3 is preserved as an
-/// opt-in via the `REIMAGE_RESIZE_FILTER=lanczos3` env var.
+/// Uses `fast_image_resize` (SIMD: SSE4.1/AVX2/NEON), 3-10× faster than
+/// `image::resize_exact` at the same visual quality. Default filter is
+/// CatmullRom (bicubic); override via `REIMAGE_RESIZE_FILTER` env var.
+/// Always returns an RGBA8 image — the downstream composite path needs
+/// RGBA anyway, so this saves one conversion when the source was non-RGBA.
 pub fn resize_image(
     img: &DynamicImage,
     width: u32,
     height: u32,
 ) -> DynamicImage {
-    img.resize_exact(width, height, resize_filter())
+    use fast_image_resize as fr;
+    use fr::images::Image as FrImage;
+
+    // Convert source to RGBA8 (fast_image_resize works on raw typed buffers).
+    let rgba_src = img.to_rgba8();
+    let (sw, sh) = rgba_src.dimensions();
+
+    let src = match FrImage::from_vec_u8(sw, sh, rgba_src.into_raw(), fr::PixelType::U8x4) {
+        Ok(s) => s,
+        // Fallback to the pure-Rust path on the (impossible) construction
+        // failure — keeps the function infallible to match the old signature.
+        Err(_) => {
+            return img.resize_exact(width, height, image::imageops::FilterType::CatmullRom);
+        }
+    };
+
+    let mut dst = FrImage::new(width, height, fr::PixelType::U8x4);
+    let mut resizer = fr::Resizer::new();
+    let opts = fr::ResizeOptions::new().resize_alg(resize_alg());
+
+    if resizer.resize(&src, &mut dst, &opts).is_err() {
+        return img.resize_exact(width, height, image::imageops::FilterType::CatmullRom);
+    }
+
+    let raw = dst.into_vec();
+    match RgbaImage::from_raw(width, height, raw) {
+        Some(out) => DynamicImage::ImageRgba8(out),
+        None => img.resize_exact(width, height, image::imageops::FilterType::CatmullRom),
+    }
 }
 
-/// Cached resize-filter choice. Read once at first use.
-fn resize_filter() -> image::imageops::FilterType {
-    use image::imageops::FilterType;
+/// Cached resize-algorithm choice. Read once at first use.
+fn resize_alg() -> fast_image_resize::ResizeAlg {
+    use fast_image_resize::{FilterType, ResizeAlg};
     use once_cell::sync::Lazy;
-    static FILTER: Lazy<FilterType> = Lazy::new(|| {
+    static ALG: Lazy<ResizeAlg> = Lazy::new(|| {
         match std::env::var("REIMAGE_RESIZE_FILTER")
             .ok()
             .as_deref()
             .map(str::to_ascii_lowercase)
             .as_deref()
         {
-            Some("nearest") => FilterType::Nearest,
-            Some("triangle") => FilterType::Triangle,
-            Some("gaussian") => FilterType::Gaussian,
-            Some("lanczos3") => FilterType::Lanczos3,
-            _ => FilterType::CatmullRom,
+            Some("nearest") => ResizeAlg::Nearest,
+            Some("triangle") | Some("bilinear") => {
+                ResizeAlg::Convolution(FilterType::Bilinear)
+            }
+            Some("gaussian") => ResizeAlg::Convolution(FilterType::Gaussian),
+            Some("lanczos3") => ResizeAlg::Convolution(FilterType::Lanczos3),
+            Some("hamming") => ResizeAlg::Convolution(FilterType::Hamming),
+            Some("mitchell") => ResizeAlg::Convolution(FilterType::Mitchell),
+            _ => ResizeAlg::Convolution(FilterType::CatmullRom),
         }
     });
-    *FILTER
+    *ALG
 }
 
 /// Encode image to WebP format.

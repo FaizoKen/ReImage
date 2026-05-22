@@ -9,12 +9,14 @@ services:
       - PORT=8080
       - NODE_ENV=production
       - RUST_LOG=info
-      # Cache settings — sized to fit the 512MB container limit alongside
-      # process/runtime memory. Cloudflare's edge cache (immutable, 1y
-      # max-age) absorbs the bulk of repeat traffic, so the origin cache
-      # only needs to cover near-term hot-set churn.
-      - OUTPUT_CACHE_SIZE_MB=200
-      - SOURCE_CACHE_SIZE_MB=100
+      # Cache settings — heavily minimised because Cloudflare's edge cache
+      # (Cache-Control: immutable, 1y max-age) absorbs >95% of repeat
+      # traffic. The origin cache only needs to deduplicate the tiny window
+      # of in-flight concurrent requests for the same key before they
+      # propagate to the edge. Raise these only if you observe Cloudflare
+      # cache-miss bursts in the logs.
+      - OUTPUT_CACHE_SIZE_MB=64
+      - SOURCE_CACHE_SIZE_MB=32
       # Timeouts
       - REQUEST_TIMEOUT_MS=30000
       - FETCH_TIMEOUT_MAIN=15000
@@ -61,14 +63,16 @@ services:
       retries: 3
     deploy:
       resources:
-        # Right-sized for the post-optimisation footprint (mimalloc allocator,
-        # decoded overlay cache, pinned HTTP client reuse). Default cache
-        # budgets total ~1.25 GB but realistic working set is ~150–300 MB
-        # because Cloudflare absorbs nearly all repeat traffic. Bump if you
-        # raise OUTPUT_CACHE_SIZE_MB / SOURCE_CACHE_SIZE_MB.
+        # Right-sized for the SIMD-resize + spawn_blocking + minimised-cache
+        # footprint. With ~96 MB of cache budgets and ~30-40 MB of process
+        # overhead (mimalloc, font db, HTTP client pools), 256 MB leaves
+        # comfortable headroom for transient decode/encode buffers. CPU
+        # halved because fast_image_resize + spawn_blocking means a single
+        # request burns much less wall time, so fewer cores can serve the
+        # same QPS. Bump if Cloudflare cache-miss bursts saturate the box.
         limits:
-          memory: 512M
-          cpus: "1.5"
+          memory: 256M
+          cpus: "0.75"
         reservations:
-          memory: 128M
-          cpus: "0.25"
+          memory: 64M
+          cpus: "0.1"
