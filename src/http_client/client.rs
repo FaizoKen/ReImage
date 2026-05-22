@@ -1,10 +1,12 @@
 use bytes::Bytes;
+use hmac::{Hmac, Mac};
 use moka::sync::Cache as SyncCache;
 use once_cell::sync::{Lazy, OnceCell};
 use reqwest::{Client, StatusCode};
+use sha2::Sha256;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 
 use crate::config::Config;
@@ -14,6 +16,13 @@ use crate::image::validation::{is_valid_content_type, is_valid_image_buffer};
 use crate::security::url_validator::{
     validate_resolved_ip, validate_url_format_with_options, UrlValidationOptions,
 };
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// Validity window for self-signed loopback URLs. The receiver is our own
+/// axum stack a millisecond away — we only need the signature to outlive
+/// the local handler hop, not survive an embed cache.
+const LOOPBACK_SIG_TTL_SECS: u64 = 60;
 
 static HTTP_CLIENT: OnceCell<Arc<HttpClient>> = OnceCell::new();
 
@@ -54,6 +63,11 @@ pub struct HttpClient {
     self_host: Option<String>,
     /// Local port the axum server is listening on — paired with self_host.
     self_port: u16,
+    /// HMAC secret for self-signing SELF_HOST loopback URLs. Required when
+    /// REQUIRE_AUTH=true: the loopback fetch re-enters the axum stack and
+    /// hits the same auth middleware, so without this the inner request
+    /// 401s. None when REQUIRE_AUTH is off (loopback skips signing too).
+    hmac_secret: Option<Vec<u8>>,
     /// Timeouts used when (re)building a pinned client. Captured from config
     /// so cached clients honour configured limits.
     agent_connect_timeout: Duration,
@@ -103,6 +117,17 @@ impl HttpClient {
             fetch_timeout_overlay: config.fetch_timeout_overlay,
             self_host: config.self_host.clone(),
             self_port: config.port,
+            // Only carry the secret if auth is actually enforced; this keeps
+            // the dev / public-mode path allocation-free.
+            hmac_secret: if config.require_auth {
+                config
+                    .hmac_secret
+                    .as_ref()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.as_bytes().to_vec())
+            } else {
+                None
+            },
             agent_connect_timeout: config.agent_connect_timeout,
             agent_body_timeout: config.agent_body_timeout,
             agent_keepalive_timeout: config.agent_keepalive_timeout,
@@ -170,11 +195,16 @@ impl HttpClient {
                 self.fetch_timeout_main
             };
             let loopback_ip: IpAddr = "127.0.0.1".parse().unwrap();
+            // The loopback request re-enters the same axum stack, so the
+            // auth middleware will inspect it just like an external call.
+            // Sign here with a short-lived signature so REQUIRE_AUTH=true
+            // doesn't 401 our own internal hop. No-op when auth is off.
+            let signed_rewrite = sign_loopback_url(&rewrite, self.hmac_secret.as_deref());
             // No retries on the loopback hop — failures here are local-router
             // rejections, retrying won't help.
             return self
                 .fetch_once_with_resolved_ip(
-                    &rewrite,
+                    &signed_rewrite,
                     "127.0.0.1",
                     loopback_ip,
                     self.self_port,
@@ -345,6 +375,80 @@ impl HttpClient {
     }
 }
 
+/// Append `expires` + `sig` query params to a loopback URL so it satisfies
+/// the auth middleware on re-entry. Mirrors the canonical algorithm in
+/// `server/middleware/auth.rs::verify_hmac_signature` exactly: parse query
+/// pairs, drop any pre-existing `sig`/`expires`, append a fresh `expires`,
+/// stable-sort by key, hash `"<path>?<joined>"` under HMAC-SHA256, hex-
+/// encode.
+///
+/// When `secret` is `None` (auth disabled), returns the URL unchanged —
+/// the public-mode dev path stays zero-overhead.
+fn sign_loopback_url(url: &str, secret: Option<&[u8]>) -> String {
+    let Some(secret) = secret else {
+        return url.to_string();
+    };
+
+    // Find scheme://host boundary so we can isolate the path+query.
+    let scheme_end = match url.find("://") {
+        Some(i) => i + 3,
+        None => return url.to_string(),
+    };
+    let rest = &url[scheme_end..];
+    let path_start = match rest.find('/') {
+        Some(i) => scheme_end + i,
+        None => return url.to_string(),
+    };
+
+    let (path, query) = match url[path_start..].find('?') {
+        Some(q) => (&url[path_start..path_start + q], &url[path_start + q + 1..]),
+        // No query → reimage routes always need params, leave alone.
+        None => return url.to_string(),
+    };
+
+    let expires = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        + LOOPBACK_SIG_TTL_SECS;
+    let expires_str = expires.to_string();
+
+    let mut pairs: Vec<(&str, &str)> = Vec::with_capacity(16);
+    for param in query.split('&') {
+        if param.is_empty() {
+            continue;
+        }
+        let (k, v) = match param.split_once('=') {
+            Some(p) => p,
+            None => continue,
+        };
+        if k == "sig" || k == "expires" {
+            continue;
+        }
+        pairs.push((k, v));
+    }
+    pairs.push(("expires", &expires_str));
+
+    // Stable sort by key — matches the server's `sort_by(|a, b| a.0.cmp(b.0))`.
+    pairs.sort_by(|a, b| a.0.cmp(b.0));
+
+    let joined = pairs
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, v))
+        .collect::<Vec<_>>()
+        .join("&");
+    let to_sign = format!("{}?{}", path, joined);
+
+    let mut mac = match HmacSha256::new_from_slice(secret) {
+        Ok(m) => m,
+        Err(_) => return url.to_string(),
+    };
+    mac.update(to_sign.as_bytes());
+    let sig = hex::encode(mac.finalize().into_bytes());
+
+    format!("{}&expires={}&sig={}", url, expires, sig)
+}
+
 /// If `parsed_url` targets our own public hostname, return a loopback-rewritten
 /// URL string (`http://127.0.0.1:{self_port}{path?query}`). Returns `Ok(None)`
 /// when `self_host` is unset or the URL targets a different host. Returns
@@ -467,5 +571,77 @@ mod tests {
             Err(FetchError::Permanent(msg)) => assert!(msg.contains("recursive")),
             other => panic!("expected Permanent error, got {:?}", other),
         }
+    }
+
+    /// Re-implement the server's verify step inline to assert that an URL
+    /// produced by `sign_loopback_url` would be accepted by
+    /// `verify_hmac_signature`. Keeps the two algorithms locked together: if
+    /// either side drifts, this test fails.
+    fn verify_like_server(url: &str, secret: &[u8]) -> bool {
+        let scheme_end = url.find("://").unwrap() + 3;
+        let rest = &url[scheme_end..];
+        let path_start = scheme_end + rest.find('/').unwrap();
+        let q_off = url[path_start..].find('?').unwrap();
+        let path = &url[path_start..path_start + q_off];
+        let query = &url[path_start + q_off + 1..];
+
+        let mut sig: Option<String> = None;
+        let mut expires: Option<&str> = None;
+        let mut pairs: Vec<(&str, &str)> = Vec::new();
+        for param in query.split('&') {
+            let (k, v) = param.split_once('=').unwrap();
+            match k {
+                "sig" => sig = Some(v.to_string()),
+                "expires" => expires = Some(v),
+                _ => pairs.push((k, v)),
+            }
+        }
+        if let Some(e) = expires {
+            pairs.push(("expires", e));
+        }
+        pairs.sort_by(|a, b| a.0.cmp(b.0));
+        let joined = pairs
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("&");
+        let to_verify = format!("{}?{}", path, joined);
+        let mut mac = HmacSha256::new_from_slice(secret).unwrap();
+        mac.update(to_verify.as_bytes());
+        let expected = hex::encode(mac.finalize().into_bytes());
+        sig.as_deref() == Some(expected.as_str())
+    }
+
+    #[test]
+    fn loopback_signing_disabled_when_secret_unset() {
+        let url = "http://127.0.0.1:8080/gradient?c=ff0000";
+        let out = sign_loopback_url(url, None);
+        assert_eq!(out, url);
+    }
+
+    #[test]
+    fn loopback_signature_verifies_against_server_algorithm() {
+        let secret = b"unit-test-secret-please-do-not-leak";
+        let url = "http://127.0.0.1:8080/gradient?c=ff0000";
+        let signed = sign_loopback_url(url, Some(secret));
+        assert!(signed.starts_with(url));
+        assert!(signed.contains("&expires="));
+        assert!(signed.contains("&sig="));
+        assert!(
+            verify_like_server(&signed, secret),
+            "signed URL must verify with the same algorithm the server uses; got {}",
+            signed
+        );
+    }
+
+    #[test]
+    fn loopback_signature_preserves_multi_value_keys() {
+        // /image uses `overlay[]=A&overlay[]=B` style; the stable sort must
+        // keep the relative order of duplicate keys so client and server
+        // produce the same canonical string.
+        let secret = b"unit-test-secret-please-do-not-leak";
+        let url = "http://127.0.0.1:8080/image?src=foo&overlay%5B%5D=A&overlay%5B%5D=B&maxw=480";
+        let signed = sign_loopback_url(url, Some(secret));
+        assert!(verify_like_server(&signed, secret));
     }
 }
