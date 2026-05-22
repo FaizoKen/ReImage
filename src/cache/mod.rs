@@ -1,10 +1,10 @@
 use ahash::AHasher;
 use bytes::Bytes;
+use image::DynamicImage;
 use moka::future::Cache;
 use once_cell::sync::OnceCell;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::config::Config;
 
@@ -18,8 +18,10 @@ pub struct CacheManager {
     /// Source cache - downloaded source images (permanent LRU, no TTL)
     pub source: Cache<String, Bytes>,
 
-    /// Overlay cache - processed overlays (count-based, TTL)
-    pub overlay: Cache<String, Bytes>,
+    /// Overlay cache - processed (resized + rounded) overlays kept decoded
+    /// so cache hits skip the PNG encode/decode round-trip that used to
+    /// happen on every reuse. `Arc<DynamicImage>` is cheap to clone.
+    pub overlay: Cache<String, Arc<DynamicImage>>,
 
     /// Mask cache - SVG masks for rounded corners (count-based, TTL)
     pub mask: Cache<String, Bytes>,
@@ -85,12 +87,12 @@ impl CacheManager {
     }
 
     /// Get overlay from cache
-    pub async fn get_overlay(&self, key: &str) -> Option<Bytes> {
+    pub async fn get_overlay(&self, key: &str) -> Option<Arc<DynamicImage>> {
         self.overlay.get(key).await
     }
 
     /// Set overlay in cache
-    pub async fn set_overlay(&self, key: String, value: Bytes) {
+    pub async fn set_overlay(&self, key: String, value: Arc<DynamicImage>) {
         self.overlay.insert(key, value).await;
     }
 

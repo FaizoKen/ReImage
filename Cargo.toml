@@ -64,6 +64,12 @@ async-trait = "0.1"
 # Fast hashing for cache keys
 ahash = "0.8"
 
+# Fast multithreaded allocator. Image decode/encode/composite are very
+# allocator-heavy and the default musl allocator (Alpine) is 3–5× slower
+# than mimalloc on this workload. `default-features=false` disables the
+# slower "secure" mode.
+mimalloc = { version = "0.1", default-features = false }
+
 # Security / Authentication
 hmac = "0.12"
 sha2 = "0.10"

@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use image::{DynamicImage, GenericImageView};
 use std::sync::Arc;
 
@@ -11,10 +10,11 @@ use crate::image::processor::{
 };
 use crate::server::error::{AppError, AppResult};
 
-/// Processed overlay ready for compositing
+/// Processed overlay ready for compositing. The image is `Arc`-wrapped so
+/// repeated cache hits can reuse the decoded pixels with no copy.
 #[derive(Debug, Clone)]
 pub struct ProcessedOverlay {
-    pub image: DynamicImage,
+    pub image: Arc<DynamicImage>,
     pub x: i64,
     pub y: i64,
 }
@@ -50,10 +50,9 @@ pub async fn process_overlay(
         config.radius.unwrap_or(0)
     );
 
-    // Check overlay cache
-    if let Some(cached_bytes) = cache_manager.get_overlay(&cache_key).await {
-        let image = decode_image(&cached_bytes)?;
-        return Ok(finalize_overlay(image, config));
+    // Check overlay cache — hit returns the decoded image directly.
+    if let Some(cached_image) = cache_manager.get_overlay(&cache_key).await {
+        return Ok(finalize_overlay(cached_image, config));
     }
 
     // Check source cache first
@@ -99,21 +98,17 @@ pub async fn process_overlay(
         }
     }
 
-    // Encode to PNG for caching (lossless, supports alpha)
-    let mut png_bytes = Vec::new();
-    image
-        .write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
-        .map_err(|e| AppError::ImageProcessing(format!("Failed to encode overlay: {}", e)))?;
+    // Cache the decoded image directly — Arc-wrapped so hits clone the
+    // pointer, not the pixels.
+    let image_arc = Arc::new(image);
+    cache_manager.set_overlay(cache_key, image_arc.clone()).await;
 
-    // Cache processed overlay
-    cache_manager.set_overlay(cache_key, Bytes::from(png_bytes)).await;
-
-    Ok(finalize_overlay(image, config))
+    Ok(finalize_overlay(image_arc, config))
 }
 
 /// Apply ring + drop shadow decoration (if requested) and adjust the overlay's
 /// render position so the visible image stays at the caller-specified (x, y).
-fn finalize_overlay(image: DynamicImage, config: &OverlayConfig) -> ProcessedOverlay {
+fn finalize_overlay(image: Arc<DynamicImage>, config: &OverlayConfig) -> ProcessedOverlay {
     if !config.decoration {
         return ProcessedOverlay {
             image,
@@ -125,7 +120,7 @@ fn finalize_overlay(image: DynamicImage, config: &OverlayConfig) -> ProcessedOve
     let params = DecorationParams::from_overlay_size(w, h);
     match apply_overlay_decorations(&image, &params) {
         Ok((decorated, pad_x, pad_y)) => ProcessedOverlay {
-            image: decorated,
+            image: Arc::new(decorated),
             x: config.x - pad_x as i64,
             y: config.y - pad_y as i64,
         },

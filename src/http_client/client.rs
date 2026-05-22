@@ -1,7 +1,7 @@
 use bytes::Bytes;
-use once_cell::sync::OnceCell;
+use moka::sync::Cache as SyncCache;
+use once_cell::sync::{Lazy, OnceCell};
 use reqwest::{Client, StatusCode};
-use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,6 +16,19 @@ use crate::security::url_validator::{
 };
 
 static HTTP_CLIENT: OnceCell<Arc<HttpClient>> = OnceCell::new();
+
+/// Pool of DNS-pinned reqwest clients, keyed by (hostname, resolved IP, port).
+/// Building a `reqwest::Client` is expensive (TLS context, connector,
+/// connection pool). Re-using the pinned client across requests to the same
+/// (host, ip, port) preserves keep-alive connections and avoids the
+/// per-request TLS handshake cost. Bounded so we don't accumulate clients
+/// indefinitely; old entries expire on a DNS-cache-ish timescale.
+static PINNED_CLIENTS: Lazy<SyncCache<(String, IpAddr, u16), Client>> = Lazy::new(|| {
+    SyncCache::builder()
+        .max_capacity(1024)
+        .time_to_idle(Duration::from_secs(300))
+        .build()
+});
 
 #[derive(Debug)]
 pub enum FetchError {
@@ -41,6 +54,13 @@ pub struct HttpClient {
     self_host: Option<String>,
     /// Local port the axum server is listening on — paired with self_host.
     self_port: u16,
+    /// Timeouts used when (re)building a pinned client. Captured from config
+    /// so cached clients honour configured limits.
+    agent_connect_timeout: Duration,
+    agent_body_timeout: Duration,
+    agent_keepalive_timeout: Duration,
+    agent_pool_max_idle: usize,
+    agent_reject_unauthorized: bool,
 }
 
 impl HttpClient {
@@ -83,29 +103,46 @@ impl HttpClient {
             fetch_timeout_overlay: config.fetch_timeout_overlay,
             self_host: config.self_host.clone(),
             self_port: config.port,
+            agent_connect_timeout: config.agent_connect_timeout,
+            agent_body_timeout: config.agent_body_timeout,
+            agent_keepalive_timeout: config.agent_keepalive_timeout,
+            agent_pool_max_idle: config.agent_connections,
+            agent_reject_unauthorized: config.agent_reject_unauthorized,
         }
     }
 
-    /// Create a client with DNS pinning for a specific hostname -> IP mapping
-    /// This prevents DNS rebinding attacks
-    fn create_pinned_client(
+    /// Get-or-build a client with DNS pinned for (hostname, ip, port).
+    /// Reuses the connection pool across requests to the same origin so we
+    /// don't pay the TLS handshake + pool-setup cost every fetch.
+    fn get_pinned_client(
         &self,
         hostname: &str,
         resolved_ip: IpAddr,
         port: u16,
     ) -> Client {
-        let socket_addr = SocketAddr::new(resolved_ip, port);
-
-        Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(30))
-            .user_agent("ImageProxy/1.0")
-            // Pin DNS: force this hostname to resolve to our validated IP
-            .resolve(hostname, socket_addr)
-            .gzip(true)
-            .deflate(true)
-            .build()
-            .unwrap_or_else(|_| self.client.clone())
+        let key = (hostname.to_string(), resolved_ip, port);
+        let connect_timeout = self.agent_connect_timeout;
+        let body_timeout = self.agent_body_timeout;
+        let keepalive = self.agent_keepalive_timeout;
+        let pool_max = self.agent_pool_max_idle;
+        let reject_unauthorized = self.agent_reject_unauthorized;
+        let fallback = self.client.clone();
+        PINNED_CLIENTS.get_with(key, move || {
+            let socket_addr = SocketAddr::new(resolved_ip, port);
+            Client::builder()
+                .connect_timeout(connect_timeout)
+                .timeout(body_timeout)
+                .pool_max_idle_per_host(pool_max)
+                .pool_idle_timeout(keepalive)
+                .user_agent("ImageProxy/1.0")
+                .danger_accept_invalid_certs(!reject_unauthorized)
+                // Pin DNS: force this hostname to resolve to our validated IP.
+                .resolve(hostname, socket_addr)
+                .gzip(true)
+                .deflate(true)
+                .build()
+                .unwrap_or(fallback)
+        })
     }
 
     /// Fetch image from URL with retry logic
@@ -234,10 +271,10 @@ impl HttpClient {
         port: u16,
         timeout: Duration,
     ) -> Result<Bytes, FetchError> {
-        // Create a client with DNS pinned to our validated IP
-        // This prevents DNS rebinding attacks where a malicious DNS server
-        // returns a public IP first, then a private IP on subsequent queries
-        let pinned_client = self.create_pinned_client(hostname, resolved_ip, port);
+        // Use a cached, DNS-pinned client (built once per (host, ip, port))
+        // so we preserve keep-alive connections and skip the TLS handshake
+        // on subsequent fetches to the same origin.
+        let pinned_client = self.get_pinned_client(hostname, resolved_ip, port);
 
         let response = tokio::time::timeout(timeout, pinned_client.get(url).send())
             .await

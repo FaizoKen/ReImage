@@ -144,28 +144,42 @@ pub async fn handle_gradient(
 /// banner (3:1 aspect) the diagonal compresses most of the color range into
 /// the corners and reads as flat; top-to-bottom uses the full c1↔c2 range
 /// across the short axis and matches Discord's banner-preset look.
+///
+/// Writes the pixel buffer directly: one RGB triple per column is computed
+/// once for the row, then memcpy'd across the row. Avoids the per-pixel
+/// `put_pixel` overhead the prior version paid (76k+ bounds-checked calls
+/// for a 480×160 gradient).
 fn render_vertical(
     w: u32,
     h: u32,
     c1: (u8, u8, u8),
     c2: (u8, u8, u8),
 ) -> RgbImage {
-    let mut img = RgbImage::new(w, h);
     let hm1 = (h.saturating_sub(1)).max(1) as f32;
     let dr = c2.0 as f32 - c1.0 as f32;
     let dg = c2.1 as f32 - c1.1 as f32;
     let db = c2.2 as f32 - c1.2 as f32;
+
+    let w_usize = w as usize;
+    let row_bytes = w_usize * 3;
+    let mut buf = vec![0u8; row_bytes * h as usize];
+
     for y in 0..h {
-        // Same colour across the whole row — compute once, copy across.
         let t = y as f32 / hm1;
         let r = (c1.0 as f32 + dr * t).round() as u8;
         let g = (c1.1 as f32 + dg * t).round() as u8;
         let b = (c1.2 as f32 + db * t).round() as u8;
-        for x in 0..w {
-            img.put_pixel(x, y, image::Rgb([r, g, b]));
+
+        let row_start = y as usize * row_bytes;
+        let row = &mut buf[row_start..row_start + row_bytes];
+        for chunk in row.chunks_exact_mut(3) {
+            chunk[0] = r;
+            chunk[1] = g;
+            chunk[2] = b;
         }
     }
-    img
+
+    RgbImage::from_raw(w, h, buf).expect("buffer sized correctly")
 }
 
 // Suppress unused warning for Bytes when feature flags evolve.

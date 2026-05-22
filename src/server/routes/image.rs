@@ -24,7 +24,7 @@ use crate::http_client::{FetchError, HttpClient};
 use crate::image::{
     overlay::{process_overlays, OverlayConfig, ProcessedOverlay},
     processor::{
-        apply_rounded_corners, calculate_dimensions, composite_overlay, decode_image,
+        apply_rounded_corners_inplace, calculate_dimensions, composite_overlay, decode_image,
         encode_webp, get_metadata, resize_image,
     },
     text::{generate_text_svg, TextConfig},
@@ -335,16 +335,16 @@ pub async fn handle_image(
         result_image = resize_image(&result_image, final_width, final_height);
     }
 
-    // Apply rounded corners to base image if needed
-    if let Some(radius) = query.rad() {
-        if radius > 0 {
-            result_image = apply_rounded_corners(&result_image, radius)?;
-        }
-    }
-
-    // Composite overlays
-    if !processed_overlays.is_empty() || text_svg.is_some() {
+    // Fold rounded-corners + overlay composite + text composite into a single
+    // RGBA conversion. Previously each step allocated its own RGBA buffer.
+    let radius = query.rad().filter(|&r| r > 0);
+    let need_composite = !processed_overlays.is_empty() || text_svg.is_some();
+    if radius.is_some() || need_composite {
         let mut base_rgba = result_image.to_rgba8();
+
+        if let Some(r) = radius {
+            apply_rounded_corners_inplace(&mut base_rgba, r);
+        }
 
         // Composite image overlays
         for overlay in processed_overlays {
