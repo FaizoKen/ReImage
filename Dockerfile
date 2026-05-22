@@ -10,7 +10,7 @@
 #                       Latin-only deployments to keep the image small.
 
 # ---------- Stage 1: cargo-chef recipe ----------
-FROM rust:1.85-alpine AS chef
+FROM rust:1-alpine AS chef
 RUN apk add --no-cache musl-dev pkgconfig openssl-dev openssl-libs-static \
     && cargo install cargo-chef --locked --version ^0.1
 WORKDIR /app
