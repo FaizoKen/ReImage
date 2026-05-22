@@ -1,87 +1,72 @@
 # ================================================
 # ReImage Rust - Multi-stage Docker Build
 # ================================================
+# Three stages:
+#   1. chef    — prepares the cargo-chef "recipe" of the dep graph
+#   2. builder — caches dep compilation independently of source changes
+#   3. runtime — minimal alpine image with only the binary + fonts
+# Build args:
+#   WITH_CJK=true     — include Noto CJK font set (~100 MB). Leave unset for
+#                       Latin-only deployments to keep the image small.
 
-# Stage 1: Build
-FROM rust:1.85-alpine AS builder
-
-# Install build dependencies
-RUN apk add --no-cache \
-    musl-dev \
-    pkgconfig \
-    openssl-dev \
-    openssl-libs-static
-
-# Create app directory
+# ---------- Stage 1: cargo-chef recipe ----------
+FROM rust:1.85-alpine AS chef
+RUN apk add --no-cache musl-dev pkgconfig openssl-dev openssl-libs-static \
+    && cargo install cargo-chef --locked --version ^0.1
 WORKDIR /app
 
-# Copy manifests
+FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
-
-# Create dummy src to cache dependencies
-RUN mkdir src && \
-    echo "fn main() {}" > src/main.rs
-
-# Build dependencies only (cached layer). The cleanup pattern must match the
-# real crate name `reimage` (see Cargo.toml) or the stub artifacts persist and
-# cargo will reuse the empty-main binary on the next build.
-RUN cargo build --release && \
-    rm -rf src target/release/reimage target/release/deps/reimage-*
-
-# Copy actual source code
 COPY src ./src
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Force a clean build of the application (touch main.rs so cargo definitely
-# rebuilds, and verify the resulting binary is not a stub).
-RUN touch src/main.rs && \
-    cargo build --release && \
-    test "$(stat -c%s target/release/reimage)" -gt 1000000 \
-      || (echo "ERROR: built binary is suspiciously small — stub leak?" && exit 1)
+# ---------- Stage 2: build ----------
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+# Build & cache deps as a separate layer — only invalidated when the dep
+# graph actually changes, not on every src tweak.
+RUN cargo chef cook --release --recipe-path recipe.json
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN cargo build --release \
+    && test "$(stat -c%s target/release/reimage)" -gt 1000000 \
+       || (echo "ERROR: built binary is suspiciously small" && exit 1)
 
-# Stage 2: Runtime
+# ---------- Stage 3: runtime ----------
 FROM alpine:3.19
+ARG WITH_CJK=false
 
-# Install runtime dependencies
+# Core runtime deps + Latin font coverage. CJK is opt-in via WITH_CJK=true
+# because the noto-cjk package set is ~100 MB and most deployments don't
+# render CJK glyphs.
 RUN apk add --no-cache \
-    ca-certificates \
-    fontconfig \
-    font-noto \
-    font-noto-cjk \
-    font-noto-emoji \
-    ttf-dejavu \
-    ttf-liberation \
-    libgcc
+        ca-certificates \
+        fontconfig \
+        font-noto \
+        font-noto-emoji \
+        ttf-dejavu \
+        ttf-liberation \
+        libgcc \
+    && if [ "$WITH_CJK" = "true" ]; then apk add --no-cache font-noto-cjk; fi
 
-# Create non-root user
-RUN addgroup -g 1001 -S appgroup && \
-    adduser -u 1001 -S appuser -G appgroup
+# Non-root user
+RUN addgroup -g 1001 -S appgroup \
+    && adduser -u 1001 -S appuser -G appgroup
 
-# Create app directory
 WORKDIR /app
-
-# Copy binary from builder
 COPY --from=builder /app/target/release/reimage /app/reimage
-
-# Set ownership
 RUN chown -R appuser:appgroup /app
-
-# Switch to non-root user
 USER appuser
 
-# Expose port (non-privileged port for security)
 EXPOSE 8080
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
-# Set environment
 ENV PORT=8080
 ENV NODE_ENV=production
 ENV RUST_LOG=warn
-# Security defaults
 ENV AGENT_REJECT_UNAUTHORIZED=true
 ENV ENABLE_REQUEST_LOGGING=true
 
-# Run the binary
 CMD ["./reimage"]

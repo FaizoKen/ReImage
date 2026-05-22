@@ -6,18 +6,23 @@ description = "High-performance image proxy and transformation service"
 license = "MIT"
 
 [dependencies]
-# Async runtime
-tokio = { version = "1", features = ["full", "parking_lot"] }
+# Async runtime — only the pieces actually used in the binary:
+# rt-multi-thread + macros for #[tokio::main]/select!, net for TcpListener,
+# signal for graceful shutdown, time for sleep/timeout, parking_lot for the
+# faster mutex implementation. Trimmed from "full" to keep build smaller.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "parking_lot"] }
 
-# Web framework
+# Web framework. hyper/hyper-util are transitive via axum — no need to depend
+# on them explicitly (we don't `use` them anywhere). tower-http only needs
+# the `timeout` layer; tower is used for ServiceBuilder which is in its core.
 axum = { version = "0.7", features = ["query", "macros"] }
-tower = { version = "0.5", features = ["timeout", "limit"] }
-tower-http = { version = "0.6", features = ["timeout", "limit", "set-header", "trace"] }
-hyper = { version = "1", features = ["full"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["timeout"] }
 
-# Image processing - rayon enables parallel pixel operations
-image = { version = "0.25", features = ["webp", "jpeg", "png", "gif", "bmp", "tiff", "rayon"] }
+# Image processing. Dropped `bmp` and `tiff` features: neither format is
+# common on the web and decoding them just inflates the binary by ~hundreds
+# of KB. Requests for those content types still fail cleanly via decode err.
+image = { version = "0.25", features = ["webp", "jpeg", "png", "gif", "rayon"] }
 webp = "0.3"
 resvg = "0.44"
 
@@ -48,9 +53,10 @@ dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
-# Error handling
+# Error handling. anyhow was only carried for the `Internal(#[from] anyhow::Error)`
+# variant of AppError, but no call site ever constructed an anyhow::Error; the
+# variant now holds a String directly so anyhow is gone.
 thiserror = "2"
-anyhow = "1"
 
 # Utilities
 bytes = "1"

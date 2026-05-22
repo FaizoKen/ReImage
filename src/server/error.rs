@@ -26,8 +26,8 @@ pub enum AppError {
     #[error("Service Unavailable: {0}")]
     ServiceUnavailable(String),
 
-    #[error("Internal Server Error")]
-    Internal(#[from] anyhow::Error),
+    #[error("Internal Server Error: {0}")]
+    Internal(String),
 
     #[error("Image processing error: {0}")]
     ImageProcessing(String),
