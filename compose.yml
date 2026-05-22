@@ -9,9 +9,12 @@ services:
       - PORT=8080
       - NODE_ENV=production
       - RUST_LOG=info
-      # Cache settings
-      - OUTPUT_CACHE_SIZE_MB=750
-      - SOURCE_CACHE_SIZE_MB=500
+      # Cache settings — sized to fit the 512MB container limit alongside
+      # process/runtime memory. Cloudflare's edge cache (immutable, 1y
+      # max-age) absorbs the bulk of repeat traffic, so the origin cache
+      # only needs to cover near-term hot-set churn.
+      - OUTPUT_CACHE_SIZE_MB=200
+      - SOURCE_CACHE_SIZE_MB=100
       # Timeouts
       - REQUEST_TIMEOUT_MS=30000
       - FETCH_TIMEOUT_MAIN=15000
@@ -58,9 +61,14 @@ services:
       retries: 3
     deploy:
       resources:
+        # Right-sized for the post-optimisation footprint (mimalloc allocator,
+        # decoded overlay cache, pinned HTTP client reuse). Default cache
+        # budgets total ~1.25 GB but realistic working set is ~150–300 MB
+        # because Cloudflare absorbs nearly all repeat traffic. Bump if you
+        # raise OUTPUT_CACHE_SIZE_MB / SOURCE_CACHE_SIZE_MB.
         limits:
-          memory: 2G
-          cpus: "2.0"
-        reservations:
           memory: 512M
-          cpus: "0.5"
+          cpus: "1.5"
+        reservations:
+          memory: 128M
+          cpus: "0.25"
