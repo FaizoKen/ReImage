@@ -27,7 +27,7 @@ use crate::image::{
     overlay::{process_overlays, OverlayConfig, ProcessedOverlay},
     processor::{
         apply_rounded_corners_inplace, calculate_dimensions, composite_overlay, decode_image,
-        encode_webp, get_metadata, resize_image,
+        encode_webp, get_metadata, resize_crop_cover, resize_image,
     },
     text::{generate_text_svg, TextConfig},
 };
@@ -64,6 +64,10 @@ pub struct ImageQuery {
     pub maxh: Vec<u32>,
     #[serde(default)]
     pub rad: Vec<u32>,
+    /// Vertical crop focus (0–100). Only meaningful when both `maxw` and
+    /// `maxh` are set — selects which slice of the cover-fit survives.
+    #[serde(default)]
+    pub focy: Vec<u32>,
 
     #[serde(default)]
     pub overlay: Vec<String>,
@@ -116,6 +120,11 @@ impl ImageQuery {
         self.rad.first().copied()
     }
 
+    /// Get focy as Option (first element of the vec)
+    pub fn focy(&self) -> Option<u32> {
+        self.focy.first().copied()
+    }
+
     /// Validate query parameters against limits
     pub fn validate(&self, config: &Config) -> AppResult<()> {
         // Validate src URL length
@@ -165,6 +174,15 @@ impl ImageQuery {
             }
         }
 
+        // Validate vertical crop focus — a 0..=100 percentage.
+        if let Some(f) = self.focy() {
+            if f > 100 {
+                return Err(AppError::BadRequest(
+                    "focy out of range (0..=100)".to_string(),
+                ));
+            }
+        }
+
         // Validate overlay count
         if self.overlay.len() > config.max_overlays {
             return Err(AppError::BadRequest("Too many overlays".to_string()));
@@ -184,6 +202,7 @@ impl ImageQuery {
             src: self.src.clone(),
             maxw: self.maxw(),
             maxh: self.maxh(),
+            focy: self.focy(),
             rad: self.rad(),
             overlay: self.overlay.clone(),
             ox: self.ox.clone(),
@@ -318,6 +337,10 @@ pub async fn handle_image(
     // the few primitives the CPU path actually needs).
     let maxw = query.maxw();
     let maxh = query.maxh();
+    // When both dimensions are given, crop to an exact cover fit; `focy`
+    // (0–100, default centred) selects the vertical slice.
+    let crop_cover = maxw.is_some() && maxh.is_some();
+    let focus_y = query.focy().map(|p| p as f32 / 100.0).unwrap_or(0.5);
     let radius = query.rad().filter(|&r| r > 0);
     let max_text_length = config.max_text_length;
     let webp_quality = config.webp_quality;
@@ -328,8 +351,11 @@ pub async fn handle_image(
     let output = tokio::task::spawn_blocking(move || -> AppResult<Bytes> {
         let base_image = decode_image(&source_buffer)?;
         let (orig_width, orig_height) = get_metadata(&base_image)?;
-        let (final_width, final_height) =
-            calculate_dimensions(orig_width, orig_height, maxw, maxh);
+        // Cover-crop targets the exact box; otherwise preserve aspect ratio.
+        let (final_width, final_height) = match (crop_cover, maxw, maxh) {
+            (true, Some(w), Some(h)) => (w, h),
+            _ => calculate_dimensions(orig_width, orig_height, maxw, maxh),
+        };
 
         let text_svg = if !text_configs.is_empty() {
             Some(generate_text_svg(
@@ -343,7 +369,10 @@ pub async fn handle_image(
         };
 
         let mut result_image = base_image;
-        if maxw.is_some() || maxh.is_some() {
+        if crop_cover {
+            result_image =
+                resize_crop_cover(&result_image, final_width, final_height, focus_y);
+        } else if maxw.is_some() || maxh.is_some() {
             result_image = resize_image(&result_image, final_width, final_height);
         }
 

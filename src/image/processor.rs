@@ -113,6 +113,39 @@ pub fn resize_image(
     }
 }
 
+/// Resize-and-crop an image to exactly `target_w` × `target_h` (cover fit).
+///
+/// The image is scaled — preserving aspect ratio — to fully cover the target
+/// box, then the overflow is cropped away. `focus_y` (0.0 = top .. 1.0 =
+/// bottom) chooses which vertical slice survives; the horizontal axis is
+/// always centred. Used by `/image` when both `maxw` and `maxh` are supplied.
+pub fn resize_crop_cover(
+    img: &DynamicImage,
+    target_w: u32,
+    target_h: u32,
+    focus_y: f32,
+) -> DynamicImage {
+    let (sw, sh) = img.dimensions();
+    if sw == 0 || sh == 0 || target_w == 0 || target_h == 0 {
+        return img.clone();
+    }
+
+    // Cover scale: the larger of the two ratios, so the scaled image fully
+    // covers the box with overflow on at most one axis.
+    let scale = (target_w as f64 / sw as f64).max(target_h as f64 / sh as f64);
+    let scaled_w = ((sw as f64 * scale).round() as u32).max(target_w);
+    let scaled_h = ((sh as f64 * scale).round() as u32).max(target_h);
+
+    let scaled = resize_image(img, scaled_w, scaled_h);
+
+    // Centre horizontally; place the vertical window by the focus point.
+    let crop_x = (scaled_w - target_w) / 2;
+    let max_y = scaled_h - target_h;
+    let crop_y = ((max_y as f32) * focus_y.clamp(0.0, 1.0)).round() as u32;
+
+    scaled.crop_imm(crop_x, crop_y.min(max_y), target_w, target_h)
+}
+
 /// Cached resize-algorithm choice. Read once at first use.
 fn resize_alg() -> fast_image_resize::ResizeAlg {
     use fast_image_resize::{FilterType, ResizeAlg};
@@ -535,6 +568,24 @@ mod tests {
 
         // Upscaling allowed
         assert_eq!(calculate_dimensions(100, 50, Some(200), None), (200, 100));
+    }
+
+    #[test]
+    fn resize_crop_cover_produces_exact_dimensions() {
+        let src = DynamicImage::ImageRgba8(RgbaImage::new(600, 240));
+
+        // A wide source cropped to a shorter box keeps the exact target size.
+        assert_eq!(
+            resize_crop_cover(&src, 480, 192, 0.5).dimensions(),
+            (480, 192)
+        );
+
+        // Focus extremes stay in bounds and still yield the exact size.
+        assert_eq!(resize_crop_cover(&src, 480, 100, 0.0).dimensions(), (480, 100));
+        assert_eq!(resize_crop_cover(&src, 480, 100, 1.0).dimensions(), (480, 100));
+
+        // Degenerate inputs return the source untouched rather than panicking.
+        assert_eq!(resize_crop_cover(&src, 0, 100, 0.5).dimensions(), (600, 240));
     }
 
     #[test]

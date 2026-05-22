@@ -131,6 +131,7 @@ pub fn get_cache_key(params: &ImageParams) -> String {
     params.src.hash(&mut hasher);
     params.maxw.hash(&mut hasher);
     params.maxh.hash(&mut hasher);
+    params.focy.hash(&mut hasher);
     params.rad.hash(&mut hasher);
 
     // Hash overlay parameters
@@ -163,6 +164,8 @@ pub struct ImageParams {
     pub src: String,
     pub maxw: Option<u32>,
     pub maxh: Option<u32>,
+    /// Vertical crop focus (0–100); paired with the `maxw`+`maxh` cover-crop.
+    pub focy: Option<u32>,
     pub rad: Option<u32>,
     pub overlay: Vec<String>,
     pub ox: Vec<i64>,

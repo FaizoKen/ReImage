@@ -7,7 +7,7 @@ Fetches remote images, applies transformations (resize, rounded corners, overlay
 ## Features
 
 - **Image Proxying** - Fetch and serve remote images through a single endpoint
-- **Resize** - Constrain images by max width/height while preserving aspect ratio
+- **Resize & Crop** - Constrain by max width/height (aspect-preserving), or crop to an exact size with a vertical focal point
 - **Rounded Corners** - Apply configurable border radius
 - **Image Overlays** - Composite multiple images with positioning, resizing, and rounding
 - **Text Overlays** - Render text onto images with configurable font, size, color, and alignment
@@ -52,7 +52,8 @@ Fetch, transform, and serve an image as WebP.
 | ----------- | ------ | -------------------------------------------- |
 | `src`       | string | **Required.** Source image URL               |
 | `maxw`      | int    | Max width (px)                               |
-| `maxh`      | int    | Max height (px)                              |
+| `maxh`      | int    | Max height (px). With `maxw`, crops to an exact `maxw`×`maxh` cover fit |
+| `focy`      | int    | Vertical crop focus `0`–`100` (top→bottom), default `50`; used with `maxw`+`maxh` |
 | `rad`       | int    | Border radius (px)                           |
 | `overlay[]` | string | Overlay image URL(s)                         |
 | `ox[]`      | int    | Overlay X offset(s)                          |
