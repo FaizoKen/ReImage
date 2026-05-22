@@ -165,6 +165,8 @@ mod tests {
             max_dimension: 8000,
             min_dimension: 1,
             max_radius: 4000,
+            max_blur: 100,
+            max_brightness: 400,
             max_bg_width: 480,
             max_overlay_size: 256,
             gradient_max_width: 480,

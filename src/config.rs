@@ -81,6 +81,14 @@ pub struct Config {
     pub min_dimension: u32,
     pub max_radius: u32,
 
+    /// Hard cap on the background `blur[]` parameter (Gaussian blur radius in
+    /// pixels). The composer UI tops out well below this.
+    pub max_blur: u32,
+
+    /// Hard cap on the background `bri[]` parameter (brightness percentage,
+    /// 100 = unchanged).
+    pub max_brightness: u32,
+
     /// Hard cap on the `/image` endpoint's `maxw[]` parameter (background
     /// resize target width). Tighter than `max_dimension` — typically the
     /// largest width any caller has any real reason to request.
@@ -191,6 +199,8 @@ impl Config {
             max_dimension: env_u32("MAX_DIMENSION", 8000),
             min_dimension: env_u32("MIN_DIMENSION", 1),
             max_radius: env_u32("MAX_RADIUS", 4000),
+            max_blur: env_u32("MAX_BLUR", 100),
+            max_brightness: env_u32("MAX_BRIGHTNESS", 400),
             max_bg_width: env_u32("MAX_BG_WIDTH", 480),
             max_overlay_size: env_u32("MAX_OVERLAY_SIZE", 256),
             gradient_max_width: env_u32("GRADIENT_MAX_WIDTH", 480),

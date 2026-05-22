@@ -26,8 +26,9 @@ use crate::http_client::{FetchError, HttpClient};
 use crate::image::{
     overlay::{process_overlays, OverlayConfig, ProcessedOverlay},
     processor::{
-        apply_rounded_corners_inplace, calculate_dimensions, composite_overlay, decode_image,
-        encode_webp, get_metadata, resize_crop_cover, resize_image,
+        apply_blur, apply_brightness, apply_rounded_corners_inplace, calculate_dimensions,
+        composite_overlay, decode_image, encode_webp, get_metadata, resize_crop_cover,
+        resize_image,
     },
     text::{generate_text_svg, TextConfig},
 };
@@ -68,6 +69,14 @@ pub struct ImageQuery {
     /// `maxh` are set — selects which slice of the cover-fit survives.
     #[serde(default)]
     pub focy: Vec<u32>,
+    /// Gaussian blur applied to the background after resize, in pixels of the
+    /// resolved background. 0 or absent = no blur.
+    #[serde(default)]
+    pub blur: Vec<u32>,
+    /// Background brightness as a percentage (100 = unchanged, <100 darkens).
+    /// Absent = 100.
+    #[serde(default)]
+    pub bri: Vec<u32>,
 
     #[serde(default)]
     pub overlay: Vec<String>,
@@ -123,6 +132,16 @@ impl ImageQuery {
     /// Get focy as Option (first element of the vec)
     pub fn focy(&self) -> Option<u32> {
         self.focy.first().copied()
+    }
+
+    /// Get background blur as Option (first element of the vec)
+    pub fn blur(&self) -> Option<u32> {
+        self.blur.first().copied()
+    }
+
+    /// Get background brightness as Option (first element of the vec)
+    pub fn bri(&self) -> Option<u32> {
+        self.bri.first().copied()
     }
 
     /// Validate query parameters against limits
@@ -183,6 +202,26 @@ impl ImageQuery {
             }
         }
 
+        // Validate background blur radius.
+        if let Some(b) = self.blur() {
+            if b > config.max_blur {
+                return Err(AppError::BadRequest(format!(
+                    "blur out of range (0..={})",
+                    config.max_blur
+                )));
+            }
+        }
+
+        // Validate background brightness percentage.
+        if let Some(b) = self.bri() {
+            if b > config.max_brightness {
+                return Err(AppError::BadRequest(format!(
+                    "bri out of range (0..={})",
+                    config.max_brightness
+                )));
+            }
+        }
+
         // Validate overlay count
         if self.overlay.len() > config.max_overlays {
             return Err(AppError::BadRequest("Too many overlays".to_string()));
@@ -203,6 +242,8 @@ impl ImageQuery {
             maxw: self.maxw(),
             maxh: self.maxh(),
             focy: self.focy(),
+            blur: self.blur(),
+            bri: self.bri(),
             rad: self.rad(),
             overlay: self.overlay.clone(),
             ox: self.ox.clone(),
@@ -342,6 +383,10 @@ pub async fn handle_image(
     let crop_cover = maxw.is_some() && maxh.is_some();
     let focus_y = query.focy().map(|p| p as f32 / 100.0).unwrap_or(0.5);
     let radius = query.rad().filter(|&r| r > 0);
+    // Background appearance filters, applied after resize and before overlays
+    // so the overlay stays crisp and bright against a softened backdrop.
+    let blur_sigma = query.blur().unwrap_or(0) as f32;
+    let brightness_factor = query.bri().map(|b| b as f32 / 100.0).unwrap_or(1.0);
     let max_text_length = config.max_text_length;
     let webp_quality = config.webp_quality;
 
@@ -375,6 +420,12 @@ pub async fn handle_image(
         } else if maxw.is_some() || maxh.is_some() {
             result_image = resize_image(&result_image, final_width, final_height);
         }
+
+        // Soften and dim the background before overlays and text land on top.
+        if blur_sigma > 0.0 {
+            result_image = apply_blur(&result_image, blur_sigma);
+        }
+        result_image = apply_brightness(result_image, brightness_factor);
 
         // Fold rounded-corners + overlay composite + text composite into a
         // single RGBA conversion. Previously each step allocated its own buffer.

@@ -146,6 +146,45 @@ pub fn resize_crop_cover(
     scaled.crop_imm(crop_x, crop_y.min(max_y), target_w, target_h)
 }
 
+/// Apply a Gaussian blur to an image. `sigma` is the standard deviation in
+/// pixels — the same convention the CSS `blur()` filter (and the composer
+/// preview) uses. Always returns an RGBA8 image.
+pub fn apply_blur(img: &DynamicImage, sigma: f32) -> DynamicImage {
+    if sigma <= 0.0 {
+        return img.clone();
+    }
+    let rgba = img.to_rgba8();
+    DynamicImage::ImageRgba8(image::imageops::blur(&rgba, sigma))
+}
+
+/// Scale every RGB channel by `factor` (1.0 = unchanged), matching the CSS
+/// `brightness()` filter. Alpha is left untouched. Consumes the image so an
+/// already-RGBA8 input is reused without a copy.
+pub fn apply_brightness(img: DynamicImage, factor: f32) -> DynamicImage {
+    if (factor - 1.0).abs() < 1e-3 {
+        return img;
+    }
+    let mut rgba = img.into_rgba8();
+
+    // Brightness is a fixed per-value map — precompute a 256-entry lookup so
+    // the hot loop is table reads instead of a float multiply per subpixel.
+    let mut lut = [0u8; 256];
+    for (value, slot) in lut.iter_mut().enumerate() {
+        *slot = (value as f32 * factor).round().clamp(0.0, 255.0) as u8;
+    }
+
+    let row_stride = rgba.width() as usize * 4;
+    rgba.par_chunks_mut(row_stride).for_each(|row| {
+        for px in row.chunks_exact_mut(4) {
+            px[0] = lut[px[0] as usize];
+            px[1] = lut[px[1] as usize];
+            px[2] = lut[px[2] as usize];
+        }
+    });
+
+    DynamicImage::ImageRgba8(rgba)
+}
+
 /// Cached resize-algorithm choice. Read once at first use.
 fn resize_alg() -> fast_image_resize::ResizeAlg {
     use fast_image_resize::{FilterType, ResizeAlg};
@@ -606,5 +645,34 @@ mod tests {
         for px in base.pixels() {
             assert_eq!(px.0, [255, 0, 0, 255]);
         }
+    }
+
+    #[test]
+    fn apply_brightness_scales_rgb_and_clamps() {
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            4,
+            4,
+            image::Rgba([200, 200, 200, 255]),
+        ));
+
+        // 50% halves each RGB channel; alpha is untouched.
+        let dark = apply_brightness(img.clone(), 0.5).to_rgba8();
+        assert_eq!(dark.get_pixel(0, 0).0, [100, 100, 100, 255]);
+
+        // 200% would overflow — channels clamp at 255.
+        let bright = apply_brightness(img.clone(), 2.0).to_rgba8();
+        assert_eq!(bright.get_pixel(0, 0).0, [255, 255, 255, 255]);
+
+        // Factor 1.0 is a no-op.
+        let same = apply_brightness(img.clone(), 1.0).to_rgba8();
+        assert_eq!(same.get_pixel(0, 0).0, [200, 200, 200, 255]);
+    }
+
+    #[test]
+    fn apply_blur_preserves_dimensions() {
+        let img = DynamicImage::ImageRgba8(RgbaImage::new(48, 32));
+        assert_eq!(apply_blur(&img, 4.0).dimensions(), (48, 32));
+        // A non-positive sigma returns the image untouched.
+        assert_eq!(apply_blur(&img, 0.0).dimensions(), (48, 32));
     }
 }

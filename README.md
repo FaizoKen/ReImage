@@ -54,6 +54,8 @@ Fetch, transform, and serve an image as WebP.
 | `maxw`      | int    | Max width (px)                               |
 | `maxh`      | int    | Max height (px). With `maxw`, crops to an exact `maxw`×`maxh` cover fit |
 | `focy`      | int    | Vertical crop focus `0`–`100` (top→bottom), default `50`; used with `maxw`+`maxh` |
+| `blur`      | int    | Background Gaussian blur radius (px), default `0` (no blur) |
+| `bri`       | int    | Background brightness `%`, default `100` (unchanged; `<100` darkens) |
 | `rad`       | int    | Border radius (px)                           |
 | `overlay[]` | string | Overlay image URL(s)                         |
 | `ox[]`      | int    | Overlay X offset(s)                          |
