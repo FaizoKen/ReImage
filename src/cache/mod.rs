@@ -144,6 +144,9 @@ pub fn get_cache_key(params: &ImageParams) -> String {
     params.omaxh.hash(&mut hasher);
     params.orad.hash(&mut hasher);
     params.odeco.hash(&mut hasher);
+    params.oshy.hash(&mut hasher);
+    params.oshb.hash(&mut hasher);
+    params.osha.hash(&mut hasher);
 
     // Hash text parameters
     params.text.hash(&mut hasher);
@@ -180,6 +183,12 @@ pub struct ImageParams {
     pub omaxh: Vec<u32>,
     pub orad: Vec<u32>,
     pub odeco: Vec<u32>,
+    /// Per-overlay shadow Y offset in pixels. Only honored when `odeco[i]` is set.
+    pub oshy: Vec<u32>,
+    /// Per-overlay shadow blur radius (CSS-style px). Only honored when `odeco[i]` is set.
+    pub oshb: Vec<u32>,
+    /// Per-overlay shadow alpha (0..=100). Only honored when `odeco[i]` is set.
+    pub osha: Vec<u32>,
     pub text: Vec<String>,
     pub tx: Vec<i64>,
     pub ty: Vec<i64>,

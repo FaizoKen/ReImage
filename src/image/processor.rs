@@ -443,27 +443,49 @@ pub fn composite_overlay(
     }
 }
 
-/// Sizing parameters for the overlay's drop shadow, scaled mildly to overlay size.
-/// Matches the modal's CSS `drop-shadow(0 4px 8px rgba(0,0,0,0.5))` at typical
-/// avatar sizes (~128 px) and grows gently from there. No ring — the modal
-/// preview is shadow-only.
+/// Drop-shadow parameters for the overlay decoration step. The renderer
+/// expresses blur as a Gaussian sigma; URL callers pass a CSS-style blur
+/// *radius*, which is converted via `sigma = radius / 2` (matching the CSS
+/// `drop-shadow()` filter spec).
 #[derive(Debug, Clone, Copy)]
 pub struct DecorationParams {
     pub shadow_offset_y: i32,
     pub shadow_blur_sigma: f32,
+    /// Pre-blur tint alpha (0..=255). 128 ≈ CSS `rgba(0,0,0,0.5)`.
+    pub shadow_alpha: u8,
 }
 
 impl DecorationParams {
-    pub fn from_overlay_size(width: u32, height: u32) -> Self {
+    /// Resolve shadow params from explicit caller overrides, falling back to
+    /// the legacy size-derived auto values when a field is absent. Backwards
+    /// compatible with URLs that only set `odeco=1`.
+    pub fn resolve(
+        width: u32,
+        height: u32,
+        offset_y: Option<u32>,
+        blur_radius_px: Option<u32>,
+        alpha_pct: Option<u32>,
+    ) -> Self {
         let size = width.min(height).max(1);
-        // Modal preview uses fixed 4px offset / 8px blur (sigma ≈ 4). Scale
-        // very gently so larger overlays still get a visible shadow without
-        // looking heavy.
-        let shadow_offset_y = ((size / 32) as i32).max(4);
-        let shadow_blur_sigma = (size as f32 / 24.0).max(4.0);
+        // Legacy auto-scaled defaults — preserved so old URLs render identically.
+        let auto_offset = ((size / 32) as i32).max(4);
+        let auto_sigma = (size as f32 / 24.0).max(4.0);
+
+        let shadow_offset_y = offset_y.map(|v| v as i32).unwrap_or(auto_offset);
+        // CSS spec: blur sigma = radius / 2. Clamp to a small floor when the
+        // caller did pass blur so a `blur=0` request renders a crisp shadow
+        // rather than skipping the blur step entirely.
+        let shadow_blur_sigma = blur_radius_px
+            .map(|r| (r as f32 / 2.0).max(0.1))
+            .unwrap_or(auto_sigma);
+        let shadow_alpha = alpha_pct
+            .map(|p| ((p.min(100) * 255) / 100) as u8)
+            .unwrap_or(128); // 50% — matches the modal preview default.
+
         Self {
             shadow_offset_y,
             shadow_blur_sigma,
+            shadow_alpha,
         }
     }
 
@@ -473,10 +495,6 @@ impl DecorationParams {
         blur_radius + self.shadow_offset_y.unsigned_abs() + 2
     }
 }
-
-/// Drop-shadow tint alpha before Gaussian spread (matches modal's 50%-black
-/// drop-shadow once the blur disperses it).
-const SHADOW_TINT_ALPHA: u32 = 128;
 
 /// Apply a drop shadow to an overlay image. Returns the decorated image and
 /// the (x, y) padding added — callers should subtract this from the overlay's
@@ -531,7 +549,7 @@ pub fn apply_overlay_decorations(
                     if src_a == 0 {
                         continue;
                     }
-                    let a = (src_a * SHADOW_TINT_ALPHA / 255) as u8;
+                    let a = (src_a * params.shadow_alpha as u32 / 255) as u8;
                     let i = cx as usize * 4;
                     row[i] = 0;
                     row[i + 1] = 0;

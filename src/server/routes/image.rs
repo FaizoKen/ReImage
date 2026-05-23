@@ -92,6 +92,18 @@ pub struct ImageQuery {
     pub orad: Vec<u32>,
     #[serde(default)]
     pub odeco: Vec<u32>,
+    /// Overlay shadow Y offset in pixels (drop distance below the overlay).
+    /// Only honored when `odeco[i]` is non-zero. Absent = auto from overlay size.
+    #[serde(default)]
+    pub oshy: Vec<u32>,
+    /// Overlay shadow blur radius in CSS-style pixels. Internally converted to
+    /// Gaussian sigma (`blur/2`). Only honored when `odeco[i]` is non-zero.
+    #[serde(default)]
+    pub oshb: Vec<u32>,
+    /// Overlay shadow alpha as a 0..=100 percentage. Only honored when
+    /// `odeco[i]` is non-zero. Absent = 50 (matches the modal preview default).
+    #[serde(default)]
+    pub osha: Vec<u32>,
 
     #[serde(default)]
     pub text: Vec<String>,
@@ -222,6 +234,31 @@ impl ImageQuery {
             }
         }
 
+        // Validate overlay shadow params. Loose caps — these are visual knobs,
+        // not resource-bound, so the limit just prevents absurd inputs from
+        // ballooning the blur kernel cost.
+        for &v in &self.oshy {
+            if v > 200 {
+                return Err(AppError::BadRequest(
+                    "oshy out of range (0..=200)".to_string(),
+                ));
+            }
+        }
+        for &v in &self.oshb {
+            if v > 200 {
+                return Err(AppError::BadRequest(
+                    "oshb out of range (0..=200)".to_string(),
+                ));
+            }
+        }
+        for &v in &self.osha {
+            if v > 100 {
+                return Err(AppError::BadRequest(
+                    "osha out of range (0..=100)".to_string(),
+                ));
+            }
+        }
+
         // Validate overlay count
         if self.overlay.len() > config.max_overlays {
             return Err(AppError::BadRequest("Too many overlays".to_string()));
@@ -252,6 +289,9 @@ impl ImageQuery {
             omaxh: self.omaxh.clone(),
             orad: self.orad.clone(),
             odeco: self.odeco.clone(),
+            oshy: self.oshy.clone(),
+            oshb: self.oshb.clone(),
+            osha: self.osha.clone(),
             text: self.text.clone(),
             tx: self.tx.clone(),
             ty: self.ty.clone(),
@@ -339,6 +379,9 @@ pub async fn handle_image(
             max_height: query.omaxh.get(i).copied(),
             radius: query.orad.get(i).copied(),
             decoration: query.odeco.get(i).copied().unwrap_or(0) != 0,
+            shadow_offset_y: query.oshy.get(i).copied(),
+            shadow_blur: query.oshb.get(i).copied(),
+            shadow_alpha_pct: query.osha.get(i).copied(),
         })
         .collect();
 

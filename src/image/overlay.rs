@@ -28,9 +28,18 @@ pub struct OverlayConfig {
     pub max_width: Option<u32>,
     pub max_height: Option<u32>,
     pub radius: Option<u32>,
-    /// Render a Tailwind-style ring + drop shadow around the overlay, matching
-    /// the ImageComposerModal preview. Adds proportional padding.
+    /// Master enable for the drop shadow around the overlay. When false, the
+    /// `shadow_*` overrides are ignored and the overlay renders bare.
     pub decoration: bool,
+    /// Shadow Y offset in pixels. `None` → auto-scale from overlay size
+    /// (matches the legacy behavior for URLs that pass only `odeco=1`).
+    pub shadow_offset_y: Option<u32>,
+    /// Shadow blur radius in CSS-style pixels (converted to sigma = blur/2 inside
+    /// the renderer). `None` → auto-scale from overlay size.
+    pub shadow_blur: Option<u32>,
+    /// Shadow alpha as a 0..=100 percentage. `None` → 50% (matches the modal
+    /// preview default of `rgba(0,0,0,0.5)`).
+    pub shadow_alpha_pct: Option<u32>,
 }
 
 /// Process a single overlay (fetch, resize, apply radius)
@@ -117,7 +126,13 @@ fn finalize_overlay(image: Arc<DynamicImage>, config: &OverlayConfig) -> Process
         };
     }
     let (w, h) = image.dimensions();
-    let params = DecorationParams::from_overlay_size(w, h);
+    let params = DecorationParams::resolve(
+        w,
+        h,
+        config.shadow_offset_y,
+        config.shadow_blur,
+        config.shadow_alpha_pct,
+    );
     match apply_overlay_decorations(&image, &params) {
         Ok((decorated, pad_x, pad_y)) => ProcessedOverlay {
             image: Arc::new(decorated),
