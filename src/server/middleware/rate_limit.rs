@@ -143,6 +143,12 @@ pub async fn rate_limit_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
+    // Health probes (polled at a fixed cadence by upstream status pages)
+    // shouldn't eat into the per-IP request budget.
+    if req.uri().path() == "/health" {
+        return next.run(req).await;
+    }
+
     let client_ip = extract_client_ip(&req, Some(&addr), &config.trusted_proxies);
 
     // Determine which rate limiter to use

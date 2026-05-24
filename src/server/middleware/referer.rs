@@ -19,6 +19,11 @@ pub async fn referer_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
+    // Health probes have no meaningful referer; let them through.
+    if req.uri().path() == "/health" {
+        return next.run(req).await;
+    }
+
     // Skip check if referer validation is not enabled
     if !config.referer_check_enabled {
         return next.run(req).await;

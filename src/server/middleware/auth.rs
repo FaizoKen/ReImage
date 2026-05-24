@@ -22,6 +22,12 @@ pub async fn auth_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
+    // Health endpoint is unauthenticated so external probes (e.g. the
+    // rolelogic /status page) can reach it without minting an HMAC URL.
+    if req.uri().path() == "/health" {
+        return next.run(req).await;
+    }
+
     // Skip auth if not required
     if !config.require_auth {
         return next.run(req).await;
