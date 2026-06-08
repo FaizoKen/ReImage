@@ -10,7 +10,7 @@ Fetches remote images, applies transformations (resize, rounded corners, overlay
 - **Resize & Crop** - Constrain by max width/height (aspect-preserving), or crop to an exact size with a vertical focal point
 - **Rounded Corners** - Apply configurable border radius
 - **Image Overlays** - Composite multiple images with positioning, resizing, and rounding
-- **Text Overlays** - Render text onto images with configurable font, size, color, and alignment
+- **Text Overlays** - Render text onto images with metric-accurate word wrapping, manual line breaks, configurable font/size/color/weight/alignment, and an optional outline for legibility over busy backgrounds
 - **WebP Output** - All output is encoded as WebP with configurable quality
 - **Multi-Layer Caching** - In-memory caches for source images, overlays, masks, and output
 - **SSRF Protection** - DNS rebinding prevention, private IP blocking, domain allowlists/blocklists
@@ -63,20 +63,36 @@ Fetch, transform, and serve an image as WebP.
 | `omaxw[]`   | int    | Overlay max width(s)                         |
 | `omaxh[]`   | int    | Overlay max height(s)                        |
 | `orad[]`    | int    | Overlay border radius(es)                    |
-| `text[]`    | string | Text overlay content(s)                      |
-| `tx[]`      | int    | Text X offset(s)                             |
-| `ty[]`      | int    | Text Y offset(s)                             |
+| `text[]`    | string | Text overlay content(s). `+` becomes a space; a literal newline forces a line break |
+| `tx[]`      | int    | Text X offset(s) (anchor point; see `ta[]`)  |
+| `ty[]`      | int    | Text Y offset(s) (top of the first line)     |
 | `ts[]`      | int    | Text font size(s)                            |
-| `tc[]`      | string | Text color(s), e.g. `#ff0000`                |
+| `tc[]`      | string | Text color(s), e.g. `#ff0000` or a named color |
 | `tf[]`      | string | Text font family(ies)                        |
-| `tmaxw[]`   | int    | Text max width(s)                            |
-| `tmaxh[]`   | int    | Text max height(s)                           |
+| `tmaxw[]`   | int    | Text max width(s) — wraps words to fit; long words are hard-broken |
+| `tmaxh[]`   | int    | Text max height(s) — caps line count and adds an `…` ellipsis when overflowing |
 | `ta[]`      | string | Text alignment(s): `left`, `center`, `right` |
+| `tw[]`      | string | Text font weight(s): `normal`, `bold` (default), `light`, `medium`, `semibold`, `black`, or a number `100`–`900` |
+| `to[]`      | string | Text outline/halo color(s) for legibility, e.g. `#000000`. Absent = no outline |
+| `tow[]`     | int    | Text outline width(s) in px (`0`–`100`). Only used when `to[]` is set; absent = auto-scaled from font size |
 
-**Example:**
+Text wrapping uses the actual metrics of the resolved font (via the bundled
+font set), so wrapped lines genuinely fit `tmaxw`/`tmaxh` instead of relying on
+a per-character estimate. Multiple texts share index-aligned arrays, e.g.
+`text[]=A&text[]=B&tc[]=red&tc[]=blue`.
+
+**Examples:**
 
 ```
 GET /image?src=https://example.com/photo.jpg&maxw=800&rad=16
+```
+
+```
+# Wrapped, bold, white caption with a black outline, centered at x=400
+GET /image?src=https://example.com/photo.jpg&maxw=800
+        &text[]=Breaking+News+from+the+field&tx[]=400&ty[]=40
+        &ts[]=36&tc[]=%23ffffff&ta[]=center&tmaxw[]=720
+        &to[]=%23000000
 ```
 
 ### `GET /health`

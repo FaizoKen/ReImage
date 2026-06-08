@@ -6,24 +6,14 @@ use axum::{
 };
 use bytes::Bytes;
 use image::DynamicImage;
-use once_cell::sync::Lazy;
-use resvg::usvg::fontdb;
 use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::cache::{get_cache_key, CacheManager, ImageParams};
-
-/// Global font database, pre-wrapped in an Arc. Loaded once at startup;
-/// every SVG render clones the Arc (pointer copy) instead of deep-cloning
-/// the fontdb::Database (which used to allocate per request).
-static FONT_DB: Lazy<Arc<fontdb::Database>> = Lazy::new(|| {
-    let mut db = fontdb::Database::new();
-    db.load_system_fonts();
-    Arc::new(db)
-});
 use crate::config::Config;
 use crate::http_client::{FetchError, HttpClient};
 use crate::image::{
+    fonts::FONTS,
     overlay::{process_overlays, OverlayConfig, ProcessedOverlay},
     processor::{
         apply_blur, apply_brightness, apply_rounded_corners_inplace, calculate_dimensions,
@@ -32,6 +22,7 @@ use crate::image::{
     },
     text::{generate_text_svg, TextConfig},
 };
+use crate::security::sanitize::sanitize_weight;
 use crate::server::error::{AppError, AppResult};
 
 /// Custom query extractor that uses serde_qs to support bracket notation (e.g., `param[]`)
@@ -123,6 +114,17 @@ pub struct ImageQuery {
     pub tmaxh: Vec<u32>,
     #[serde(default)]
     pub ta: Vec<String>,
+    /// Text font weight(s): `normal`, `bold`, `light`, `semibold`, `black`, or a
+    /// numeric 100–900. Absent = `bold`.
+    #[serde(default)]
+    pub tw: Vec<String>,
+    /// Text outline/halo color(s) (hex or named). Absent = no outline.
+    #[serde(default)]
+    pub to: Vec<String>,
+    /// Text outline width(s) in px. Only honored when the matching `to[i]` is
+    /// set. Absent = auto-scaled from the font size.
+    #[serde(default)]
+    pub tow: Vec<u32>,
 }
 
 impl ImageQuery {
@@ -269,6 +271,16 @@ impl ImageQuery {
             return Err(AppError::BadRequest("Too many text overlays".to_string()));
         }
 
+        // Validate text outline width. Loose cap — a visual knob, but an absurd
+        // stroke width would blow up the glyph outline rasterization cost.
+        for &v in &self.tow {
+            if v > 100 {
+                return Err(AppError::BadRequest(
+                    "tow out of range (0..=100)".to_string(),
+                ));
+            }
+        }
+
         Ok(())
     }
 
@@ -301,6 +313,9 @@ impl ImageQuery {
             tmaxw: self.tmaxw.clone(),
             tmaxh: self.tmaxh.clone(),
             ta: self.ta.clone(),
+            tw: self.tw.clone(),
+            to: self.to.clone(),
+            tow: self.tow.clone(),
         }
     }
 }
@@ -413,6 +428,15 @@ pub async fn handle_image(
             max_width: query.tmaxw.get(i).copied(),
             max_height: query.tmaxh.get(i).copied(),
             align: query.ta.get(i).cloned().unwrap_or_else(|| "left".to_string()),
+            weight: sanitize_weight(query.tw.get(i).map(String::as_str)),
+            // An outline is only applied when a non-empty color is supplied.
+            outline_color: query
+                .to
+                .get(i)
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            outline_width: query.tow.get(i).copied(),
         })
         .collect();
 
@@ -519,9 +543,12 @@ fn render_svg_to_image(svg_data: &[u8], width: u32, height: u32) -> AppResult<Dy
     use resvg::tiny_skia;
     use resvg::usvg;
 
-    // Cheap Arc pointer-clone — fontdb stays shared across all requests.
+    // Cheap Arc pointer-clone — the shared fontdb stays shared across all
+    // requests. `font_family` points unresolved/generic families at a real
+    // installed sans-serif instead of usvg's built-in serif default.
     let options = usvg::Options {
-        fontdb: FONT_DB.clone(),
+        fontdb: FONTS.db.clone(),
+        font_family: FONTS.default_family.clone(),
         ..Default::default()
     };
 

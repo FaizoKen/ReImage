@@ -27,6 +27,10 @@ tower-http = { version = "0.6", features = ["timeout"] }
 image = { version = "0.25", features = ["webp", "jpeg", "png"] }
 webp = "0.3"
 resvg = "0.44"
+# Direct font metrics for accurate text wrapping. Already pulled in transitively
+# by resvg/usvg (0.24.x); depending on it directly lets us measure real glyph
+# advance widths instead of guessing `font_size * 0.6` per character.
+ttf-parser = "0.24"
 
 # SIMD-accelerated resize (SSE4.1/AVX2/NEON). Replaces image::resize_exact
 # on the hot path — typically 3-10x faster at the same visual quality.

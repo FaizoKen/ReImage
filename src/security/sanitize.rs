@@ -83,6 +83,36 @@ pub fn sanitize_font(font: Option<&str>) -> String {
     }
 }
 
+/// Sanitize a CSS font-weight into a safe numeric value (100..=900).
+///
+/// Accepts keywords (`normal`, `bold`, `light`, `semibold`, `black`, …) and
+/// numeric strings. Unknown/empty input defaults to `700` (bold), matching the
+/// feature's historical always-bold behavior.
+pub fn sanitize_weight(weight: Option<&str>) -> u16 {
+    let raw = match weight {
+        Some(w) if !w.trim().is_empty() => w.trim(),
+        _ => return 700,
+    };
+
+    if let Ok(n) = raw.parse::<u16>() {
+        // Round to the nearest 100 and clamp to the usable CSS range.
+        return n.clamp(100, 900);
+    }
+
+    match raw.to_ascii_lowercase().as_str() {
+        "thin" | "hairline" => 100,
+        "extralight" | "ultralight" => 200,
+        "light" => 300,
+        "normal" | "regular" | "book" => 400,
+        "medium" => 500,
+        "semibold" | "demibold" => 600,
+        "bold" => 700,
+        "extrabold" | "ultrabold" => 800,
+        "black" | "heavy" => 900,
+        _ => 700,
+    }
+}
+
 /// Sanitize text content (prevent XSS in SVG)
 /// Encodes HTML entities for safe SVG embedding
 pub fn sanitize_text(text: &str, max_length: usize) -> String {
@@ -150,6 +180,21 @@ mod tests {
         assert_eq!(sanitize_font(Some("font-family")), "font-family");
         assert_eq!(sanitize_font(Some("Bad<Script>")), "BadScript");
         assert_eq!(sanitize_font(None), "Arial");
+    }
+
+    #[test]
+    fn test_sanitize_weight() {
+        assert_eq!(sanitize_weight(None), 700);
+        assert_eq!(sanitize_weight(Some("")), 700);
+        assert_eq!(sanitize_weight(Some("normal")), 400);
+        assert_eq!(sanitize_weight(Some("BOLD")), 700);
+        assert_eq!(sanitize_weight(Some("light")), 300);
+        assert_eq!(sanitize_weight(Some("semibold")), 600);
+        assert_eq!(sanitize_weight(Some("900")), 900);
+        assert_eq!(sanitize_weight(Some("450")), 450);
+        assert_eq!(sanitize_weight(Some("5000")), 900); // clamped
+        assert_eq!(sanitize_weight(Some("10")), 100); // clamped
+        assert_eq!(sanitize_weight(Some("garbage")), 700);
     }
 
     #[test]

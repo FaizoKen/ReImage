@@ -158,6 +158,9 @@ pub fn get_cache_key(params: &ImageParams) -> String {
     params.tmaxw.hash(&mut hasher);
     params.tmaxh.hash(&mut hasher);
     params.ta.hash(&mut hasher);
+    params.tw.hash(&mut hasher);
+    params.to.hash(&mut hasher);
+    params.tow.hash(&mut hasher);
 
     // Convert hash to hex string (16 chars)
     format!("{:016x}", hasher.finish())
@@ -198,6 +201,12 @@ pub struct ImageParams {
     pub tmaxw: Vec<u32>,
     pub tmaxh: Vec<u32>,
     pub ta: Vec<String>,
+    /// Per-text font weight tokens (`bold`, `normal`, `600`, …).
+    pub tw: Vec<String>,
+    /// Per-text outline color(s); empty/absent disables the outline.
+    pub to: Vec<String>,
+    /// Per-text outline width(s) in px.
+    pub tow: Vec<u32>,
 }
 
 #[cfg(test)]

@@ -2108,6 +2108,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "ttf-parser",
  "url",
  "uuid",
  "webp",
