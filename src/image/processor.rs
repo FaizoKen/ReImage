@@ -205,7 +205,13 @@ fn resize_alg() -> fast_image_resize::ResizeAlg {
 }
 
 /// Encode image to WebP format.
-pub fn encode_webp(img: &DynamicImage, quality: u8) -> AppResult<Bytes> {
+///
+/// `effort` maps to libwebp's `method` — its speed/size knob. `0` (the default)
+/// keeps libwebp's default encode path (≈ method 4) and is byte-identical to the
+/// historical output. `1` is the fastest encode (largest file) and `6` the
+/// slowest (smallest file); values above 6 are clamped. `effort` only trades CPU
+/// time against compression density — it never changes the quality target.
+pub fn encode_webp(img: &DynamicImage, quality: u8, effort: u8) -> AppResult<Bytes> {
     // Borrow the RGBA buffer when already in that format; else convert.
     let rgba = match img {
         DynamicImage::ImageRgba8(rgba) => std::borrow::Cow::Borrowed(rgba),
@@ -213,13 +219,45 @@ pub fn encode_webp(img: &DynamicImage, quality: u8) -> AppResult<Bytes> {
     };
     let (width, height) = rgba.dimensions();
 
+    let encoder = webp::Encoder::from_rgba(rgba.as_raw(), width, height);
+
+    // effort == 0 preserves the exact historical encode path (simple API,
+    // libwebp's default method). A non-zero effort overrides only `method`
+    // via the advanced config — same quality, different speed/size trade-off.
+    // If the advanced encode ever rejects the config we fall back to the simple
+    // path rather than fail a request over a tuning knob.
+    let webp_data = match effort {
+        0 => encoder.encode(quality as f32),
+        e => match build_webp_config(quality as f32, e) {
+            Some(config) => match encoder.encode_advanced(&config) {
+                Ok(mem) => mem,
+                Err(_) => encoder.encode(quality as f32),
+            },
+            None => encoder.encode(quality as f32),
+        },
+    };
+
     // The `webp` crate's `WebPMemory` is neither `Send` nor `AsRef<[u8]>`, so
     // we cannot hand ownership to `Bytes` directly — copy out once. This is a
     // single sequential copy of an already-compressed buffer (<1 MB for the
     // sizes this service serves), dominated by the encode itself.
-    let encoder = webp::Encoder::from_rgba(rgba.as_raw(), width, height);
-    let webp_data = encoder.encode(quality as f32);
     Ok(Bytes::copy_from_slice(&webp_data))
+}
+
+/// Build a lossy `WebPConfig` that mirrors the `webp` crate's
+/// `encode_simple(false, quality)` defaults exactly, overriding only `method`
+/// with the clamped `effort` (1..=6). Returns `None` if libwebp fails to
+/// initialise a config (effectively never), so the caller falls back to the
+/// simple encode path.
+fn build_webp_config(quality: f32, effort: u8) -> Option<webp::WebPConfig> {
+    let mut config = webp::WebPConfig::new().ok()?;
+    // These three lines reproduce `Encoder::encode_simple(false, quality)`.
+    config.lossless = 0;
+    config.alpha_compression = 1;
+    config.quality = quality;
+    // The only deviation from the default path: the speed/size method.
+    config.method = effort.min(6) as i32;
+    Some(config)
 }
 
 /// Create a rounded corner mask as SVG
@@ -716,5 +754,39 @@ mod tests {
         assert_eq!(apply_blur(&img, 4.0).dimensions(), (48, 32));
         // A non-positive sigma returns the image untouched.
         assert_eq!(apply_blur(&img, 0.0).dimensions(), (48, 32));
+    }
+
+    #[test]
+    fn encode_webp_produces_valid_webp_at_all_efforts() {
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            16,
+            16,
+            image::Rgba([120, 200, 80, 255]),
+        ));
+        // effort 0 is the default path; 1 = fastest, 4 = legacy method, 6 = smallest.
+        for effort in [0u8, 1, 4, 6] {
+            let out = encode_webp(&img, 80, effort).expect("encode should succeed");
+            // A RIFF/WEBP container is at least a 12-byte header.
+            assert!(out.len() > 12, "effort {effort} produced too-small output");
+            assert_eq!(&out[0..4], b"RIFF", "effort {effort} missing RIFF header");
+            assert_eq!(&out[8..12], b"WEBP", "effort {effort} missing WEBP fourcc");
+        }
+    }
+
+    #[test]
+    fn encode_webp_effort_zero_matches_simple_encode() {
+        // effort == 0 must be byte-identical to the crate's own simple encode,
+        // i.e. the historical behaviour, so the default path never regresses.
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            24,
+            18,
+            image::Rgba([10, 20, 30, 255]),
+        ));
+        let rgba = img.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        let reference = webp::Encoder::from_rgba(rgba.as_raw(), w, h).encode(80.0);
+
+        let ours = encode_webp(&img, 80, 0).expect("encode should succeed");
+        assert_eq!(&ours[..], &reference[..]);
     }
 }

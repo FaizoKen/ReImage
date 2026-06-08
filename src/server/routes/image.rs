@@ -7,9 +7,10 @@ use axum::{
 use bytes::Bytes;
 use image::DynamicImage;
 use serde::Deserialize;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use crate::cache::{get_cache_key, CacheManager, ImageParams};
+use crate::cache::{get_cache_key, CacheKeyInput, CacheManager};
 use crate::config::Config;
 use crate::http_client::{FetchError, HttpClient};
 use crate::image::{
@@ -283,40 +284,47 @@ impl ImageQuery {
 
         Ok(())
     }
+}
 
-    /// Convert to ImageParams for cache key generation
-    pub fn to_params(&self) -> ImageParams {
-        ImageParams {
-            src: self.src.clone(),
-            maxw: self.maxw(),
-            maxh: self.maxh(),
-            focy: self.focy(),
-            blur: self.blur(),
-            bri: self.bri(),
-            rad: self.rad(),
-            overlay: self.overlay.clone(),
-            ox: self.ox.clone(),
-            oy: self.oy.clone(),
-            omaxw: self.omaxw.clone(),
-            omaxh: self.omaxh.clone(),
-            orad: self.orad.clone(),
-            odeco: self.odeco.clone(),
-            oshy: self.oshy.clone(),
-            oshb: self.oshb.clone(),
-            osha: self.osha.clone(),
-            text: self.text.clone(),
-            tx: self.tx.clone(),
-            ty: self.ty.clone(),
-            ts: self.ts.clone(),
-            tc: self.tc.clone(),
-            tf: self.tf.clone(),
-            tmaxw: self.tmaxw.clone(),
-            tmaxh: self.tmaxh.clone(),
-            ta: self.ta.clone(),
-            tw: self.tw.clone(),
-            to: self.to.clone(),
-            tow: self.tow.clone(),
-        }
+/// Hash the request's cache-distinguishing fields straight from the live query
+/// — mirrors the field set (and Option-reduction of the single-value params)
+/// that `ImageParams` used, but without cloning the `src` String or any of the
+/// per-feature `Vec`s. Single-value params hash their resolved `Option` (the
+/// first element, which is all the processing path reads); multi-value params
+/// hash the whole `Vec`.
+impl CacheKeyInput for ImageQuery {
+    fn hash_into<H: Hasher>(&self, hasher: &mut H) {
+        self.src.hash(hasher);
+        self.maxw().hash(hasher);
+        self.maxh().hash(hasher);
+        self.focy().hash(hasher);
+        self.blur().hash(hasher);
+        self.bri().hash(hasher);
+        self.rad().hash(hasher);
+
+        self.overlay.hash(hasher);
+        self.ox.hash(hasher);
+        self.oy.hash(hasher);
+        self.omaxw.hash(hasher);
+        self.omaxh.hash(hasher);
+        self.orad.hash(hasher);
+        self.odeco.hash(hasher);
+        self.oshy.hash(hasher);
+        self.oshb.hash(hasher);
+        self.osha.hash(hasher);
+
+        self.text.hash(hasher);
+        self.tx.hash(hasher);
+        self.ty.hash(hasher);
+        self.ts.hash(hasher);
+        self.tc.hash(hasher);
+        self.tf.hash(hasher);
+        self.tmaxw.hash(hasher);
+        self.tmaxh.hash(hasher);
+        self.ta.hash(hasher);
+        self.tw.hash(hasher);
+        self.to.hash(hasher);
+        self.tow.hash(hasher);
     }
 }
 
@@ -338,9 +346,8 @@ pub async fn handle_image(
     // Validate parameters
     query.validate(config)?;
 
-    // Generate cache key
-    let params = query.to_params();
-    let cache_key = get_cache_key(&params);
+    // Generate cache key straight from the query (no intermediate allocation)
+    let cache_key = get_cache_key(&query);
 
     // Fast path: check output cache BEFORE URL validation
     if let Some(cached) = state.cache_manager.get_output(&cache_key).await {
@@ -355,32 +362,8 @@ pub async fn handle_image(
         ));
     }
 
-    // Check source cache
-    let source_buffer = if let Some(cached) = state.cache_manager.get_source(&query.src).await {
-        cached
-    } else {
-        // Fetch source image (includes URL validation and SSRF protection)
-        let fetched = state
-            .http_client
-            .fetch_image(&query.src, false)
-            .await
-            .map_err(|e| match e {
-                FetchError::NotFound => {
-                    AppError::NotFound("Source image not found or inaccessible".to_string())
-                }
-                FetchError::Permanent(msg) => AppError::BadRequest(msg),
-                FetchError::Transient(msg) => AppError::FetchFailed(msg),
-            })?;
-
-        // Cache source
-        state
-            .cache_manager
-            .set_source(query.src.clone(), fetched.clone())
-            .await;
-        fetched
-    };
-
-    // Process overlays in parallel (async I/O — fetches stay on the tokio runtime)
+    // Build overlay fetch/transform configs up front (cheap, no I/O) so their
+    // network round-trips can overlap with the source fetch below.
     let overlay_configs: Vec<OverlayConfig> = query
         .overlay
         .iter()
@@ -400,17 +383,52 @@ pub async fn handle_image(
         })
         .collect();
 
-    let processed_overlays = if !overlay_configs.is_empty() {
-        process_overlays(
-            overlay_configs,
-            state.http_client.clone(),
-            state.cache_manager.clone(),
-            state.config.clone(),
-        )
-        .await
-    } else {
-        Vec::new()
+    // Fetch the source image and process all overlays concurrently. On a cache
+    // miss both legs hit the network; overlapping them with `join!` removes the
+    // source-fetch latency from the overlay-fetch latency instead of paying
+    // them back-to-back. (Cache hits resolve immediately, so this is free.)
+    let source_fut = async {
+        if let Some(cached) = state.cache_manager.get_source(&query.src).await {
+            Ok::<Bytes, AppError>(cached)
+        } else {
+            // Fetch source image (includes URL validation and SSRF protection)
+            let fetched = state
+                .http_client
+                .fetch_image(&query.src, false)
+                .await
+                .map_err(|e| match e {
+                    FetchError::NotFound => {
+                        AppError::NotFound("Source image not found or inaccessible".to_string())
+                    }
+                    FetchError::Permanent(msg) => AppError::BadRequest(msg),
+                    FetchError::Transient(msg) => AppError::FetchFailed(msg),
+                })?;
+
+            // Cache source
+            state
+                .cache_manager
+                .set_source(query.src.clone(), fetched.clone())
+                .await;
+            Ok(fetched)
+        }
     };
+
+    let overlays_fut = async {
+        if overlay_configs.is_empty() {
+            Vec::new()
+        } else {
+            process_overlays(
+                overlay_configs,
+                state.http_client.clone(),
+                state.cache_manager.clone(),
+                state.config.clone(),
+            )
+            .await
+        }
+    };
+
+    let (source_result, processed_overlays) = tokio::join!(source_fut, overlays_fut);
+    let source_buffer = source_result?;
 
     // Build text configs (cheap, no I/O).
     let text_configs: Vec<TextConfig> = query
@@ -468,6 +486,7 @@ pub async fn handle_image(
     let brightness_factor = query.bri().map(|b| b as f32 / 100.0).unwrap_or(1.0);
     let max_text_length = config.max_text_length;
     let webp_quality = config.webp_quality;
+    let webp_effort = config.webp_effort;
 
     // Move all CPU-bound work (decode + resize + composite + text raster +
     // encode) off the tokio worker so other in-flight requests aren't
@@ -509,7 +528,10 @@ pub async fn handle_image(
         // single RGBA conversion. Previously each step allocated its own buffer.
         let need_composite = !processed_overlays.is_empty() || text_svg.is_some();
         if radius.is_some() || need_composite {
-            let mut base_rgba = result_image.to_rgba8();
+            // `into_rgba8` reuses the buffer when `result_image` is already
+            // RGBA8 (it is after resize/blur/brightness), avoiding a full
+            // W×H×4 clone that `to_rgba8` would make on every composite.
+            let mut base_rgba = result_image.into_rgba8();
 
             if let Some(r) = radius {
                 apply_rounded_corners_inplace(&mut base_rgba, r);
@@ -528,7 +550,7 @@ pub async fn handle_image(
             result_image = DynamicImage::ImageRgba8(base_rgba);
         }
 
-        encode_webp(&result_image, webp_quality)
+        encode_webp(&result_image, webp_quality, webp_effort)
     })
     .await
     .map_err(|e| AppError::Internal(format!("CPU task failed: {}", e)))??;

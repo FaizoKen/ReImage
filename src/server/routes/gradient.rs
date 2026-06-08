@@ -132,7 +132,11 @@ pub async fn handle_gradient(
     }
 
     let img = render_radial(w, h, inner, outer);
-    let webp = encode_webp(&DynamicImage::ImageRgb8(img), config.webp_quality)?;
+    let webp = encode_webp(
+        &DynamicImage::ImageRgb8(img),
+        config.webp_quality,
+        config.webp_effort,
+    )?;
     state
         .cache_manager
         .set_output(cache_key, webp.clone())

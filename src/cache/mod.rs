@@ -122,48 +122,62 @@ impl CacheManager {
     }
 }
 
-/// Generate cache key for output cache using fast hashing
-/// Uses ahash for O(1) allocation-free key generation
-pub fn get_cache_key(params: &ImageParams) -> String {
+/// Types that can feed their cache-distinguishing fields into a hasher.
+///
+/// This lets the output-cache key be computed straight from the live request
+/// struct on the hot path — no intermediate `ImageParams` allocation (which
+/// used to clone the `src` String plus ~20 `Vec`s per request) — while the
+/// unit tests still exercise the exact same hashing through `ImageParams`.
+pub trait CacheKeyInput {
+    fn hash_into<H: Hasher>(&self, hasher: &mut H);
+}
+
+/// Generate cache key for output cache using fast hashing.
+/// Uses ahash for O(1) allocation-free key generation.
+pub fn get_cache_key<T: CacheKeyInput>(input: &T) -> String {
     let mut hasher = AHasher::default();
-
-    // Hash all parameters directly without string allocation
-    params.src.hash(&mut hasher);
-    params.maxw.hash(&mut hasher);
-    params.maxh.hash(&mut hasher);
-    params.focy.hash(&mut hasher);
-    params.blur.hash(&mut hasher);
-    params.bri.hash(&mut hasher);
-    params.rad.hash(&mut hasher);
-
-    // Hash overlay parameters
-    params.overlay.hash(&mut hasher);
-    params.ox.hash(&mut hasher);
-    params.oy.hash(&mut hasher);
-    params.omaxw.hash(&mut hasher);
-    params.omaxh.hash(&mut hasher);
-    params.orad.hash(&mut hasher);
-    params.odeco.hash(&mut hasher);
-    params.oshy.hash(&mut hasher);
-    params.oshb.hash(&mut hasher);
-    params.osha.hash(&mut hasher);
-
-    // Hash text parameters
-    params.text.hash(&mut hasher);
-    params.tx.hash(&mut hasher);
-    params.ty.hash(&mut hasher);
-    params.ts.hash(&mut hasher);
-    params.tc.hash(&mut hasher);
-    params.tf.hash(&mut hasher);
-    params.tmaxw.hash(&mut hasher);
-    params.tmaxh.hash(&mut hasher);
-    params.ta.hash(&mut hasher);
-    params.tw.hash(&mut hasher);
-    params.to.hash(&mut hasher);
-    params.tow.hash(&mut hasher);
-
+    input.hash_into(&mut hasher);
     // Convert hash to hex string (16 chars)
     format!("{:016x}", hasher.finish())
+}
+
+impl CacheKeyInput for ImageParams {
+    fn hash_into<H: Hasher>(&self, hasher: &mut H) {
+        // Hash all parameters directly without string allocation
+        self.src.hash(hasher);
+        self.maxw.hash(hasher);
+        self.maxh.hash(hasher);
+        self.focy.hash(hasher);
+        self.blur.hash(hasher);
+        self.bri.hash(hasher);
+        self.rad.hash(hasher);
+
+        // Hash overlay parameters
+        self.overlay.hash(hasher);
+        self.ox.hash(hasher);
+        self.oy.hash(hasher);
+        self.omaxw.hash(hasher);
+        self.omaxh.hash(hasher);
+        self.orad.hash(hasher);
+        self.odeco.hash(hasher);
+        self.oshy.hash(hasher);
+        self.oshb.hash(hasher);
+        self.osha.hash(hasher);
+
+        // Hash text parameters
+        self.text.hash(hasher);
+        self.tx.hash(hasher);
+        self.ty.hash(hasher);
+        self.ts.hash(hasher);
+        self.tc.hash(hasher);
+        self.tf.hash(hasher);
+        self.tmaxw.hash(hasher);
+        self.tmaxh.hash(hasher);
+        self.ta.hash(hasher);
+        self.tw.hash(hasher);
+        self.to.hash(hasher);
+        self.tow.hash(hasher);
+    }
 }
 
 /// Image request parameters

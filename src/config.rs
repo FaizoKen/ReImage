@@ -176,6 +176,11 @@ pub struct Config {
 
     // Output
     pub webp_quality: u8,
+    /// WebP encode effort, mapped to libwebp's `method` speed/size knob via
+    /// `WEBP_EFFORT`. `0` (default) keeps libwebp's default path and is
+    /// byte-identical to historical output; `1` is the fastest encode (largest
+    /// file) and `6` the slowest (smallest). Set `WEBP_EFFORT=1` to trade a
+    /// little file size for lower encode latency under load.
     pub webp_effort: u8,
 
     // Logging
