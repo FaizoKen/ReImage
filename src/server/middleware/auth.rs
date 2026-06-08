@@ -122,7 +122,16 @@ fn verify_hmac_signature(req: &Request<Body>, secret: &str) -> bool {
             return false; // Signature expired
         }
 
-        params_to_sign.push(("expires", query.split("expires=").nth(1).unwrap_or("").split('&').next().unwrap_or("")));
+        params_to_sign.push((
+            "expires",
+            query
+                .split("expires=")
+                .nth(1)
+                .unwrap_or("")
+                .split('&')
+                .next()
+                .unwrap_or(""),
+        ));
     }
 
     // Sort parameters for consistent signing

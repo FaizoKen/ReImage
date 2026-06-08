@@ -73,7 +73,8 @@ impl IntoResponse for AppError {
                 "An unexpected error occurred".to_string(),
             ),
             AppError::ImageProcessing(msg) => {
-                if msg.contains("unsupported") || msg.contains("corrupt") || msg.contains("Invalid") {
+                if msg.contains("unsupported") || msg.contains("corrupt") || msg.contains("Invalid")
+                {
                     (
                         StatusCode::BAD_REQUEST,
                         "Bad Request",
@@ -87,11 +88,7 @@ impl IntoResponse for AppError {
                     )
                 }
             }
-            AppError::InvalidUrl(msg) => (
-                StatusCode::BAD_REQUEST,
-                "Bad Request",
-                msg.clone(),
-            ),
+            AppError::InvalidUrl(msg) => (StatusCode::BAD_REQUEST, "Bad Request", msg.clone()),
             AppError::SsrfBlocked(_) => (
                 StatusCode::BAD_REQUEST,
                 "Bad Request",

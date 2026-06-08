@@ -47,7 +47,7 @@ pub async fn process_overlay(
     config: &OverlayConfig,
     http_client: &HttpClient,
     cache_manager: &CacheManager,
-    app_config: &Config,
+    _app_config: &Config,
 ) -> AppResult<ProcessedOverlay> {
     // Generate cache key for the un-decorated overlay (decoration is applied after
     // cache hit so we don't need to know the pad offset to use a cached entry).
@@ -79,7 +79,9 @@ pub async fn process_overlay(
             })?;
 
         // Cache source
-        cache_manager.set_source(config.url.clone(), fetched.clone()).await;
+        cache_manager
+            .set_source(config.url.clone(), fetched.clone())
+            .await;
         fetched
     };
 
@@ -91,12 +93,8 @@ pub async fn process_overlay(
 
     // Resize if needed
     if config.max_width.is_some() || config.max_height.is_some() {
-        let (new_width, new_height) = calculate_dimensions(
-            orig_width,
-            orig_height,
-            config.max_width,
-            config.max_height,
-        );
+        let (new_width, new_height) =
+            calculate_dimensions(orig_width, orig_height, config.max_width, config.max_height);
         image = resize_image(&image, new_width, new_height);
     }
 
@@ -110,7 +108,9 @@ pub async fn process_overlay(
     // Cache the decoded image directly — Arc-wrapped so hits clone the
     // pointer, not the pixels.
     let image_arc = Arc::new(image);
-    cache_manager.set_overlay(cache_key, image_arc.clone()).await;
+    cache_manager
+        .set_overlay(cache_key, image_arc.clone())
+        .await;
 
     Ok(finalize_overlay(image_arc, config))
 }
@@ -140,7 +140,10 @@ fn finalize_overlay(image: Arc<DynamicImage>, config: &OverlayConfig) -> Process
             y: config.y - pad_y as i64,
         },
         Err(e) => {
-            tracing::warn!("Overlay decoration failed, falling back to plain overlay: {:?}", e);
+            tracing::warn!(
+                "Overlay decoration failed, falling back to plain overlay: {:?}",
+                e
+            );
             ProcessedOverlay {
                 image,
                 x: config.x,
@@ -177,9 +180,5 @@ pub async fn process_overlays(
         })
         .collect();
 
-    join_all(futures)
-        .await
-        .into_iter()
-        .flatten()
-        .collect()
+    join_all(futures).await.into_iter().flatten().collect()
 }

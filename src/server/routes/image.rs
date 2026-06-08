@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::http_client::{FetchError, HttpClient};
 use crate::image::{
     fonts::FONTS,
-    overlay::{process_overlays, OverlayConfig, ProcessedOverlay},
+    overlay::{process_overlays, OverlayConfig},
     processor::{
         apply_blur, apply_brightness, apply_rounded_corners_inplace, calculate_dimensions,
         composite_overlay, decode_image, encode_webp, get_metadata, resize_crop_cover,
@@ -39,9 +39,9 @@ where
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         let query = parts.uri.query().unwrap_or_default();
         let config = serde_qs::Config::new(5, false);
-        let value = config
-            .deserialize_str(query)
-            .map_err(|e| AppError::BadRequest(format!("Failed to deserialize query string: {}", e)))?;
+        let value = config.deserialize_str(query).map_err(|e| {
+            AppError::BadRequest(format!("Failed to deserialize query string: {}", e))
+        })?;
         Ok(QsQuery(value))
     }
 }
@@ -423,11 +423,23 @@ pub async fn handle_image(
             x: *query.tx.get(i).unwrap_or(&0),
             y: *query.ty.get(i).unwrap_or(&0),
             font_size: *query.ts.get(i).unwrap_or(&24),
-            color: query.tc.get(i).cloned().unwrap_or_else(|| "#000000".to_string()),
-            font_family: query.tf.get(i).cloned().unwrap_or_else(|| "Arial".to_string()),
+            color: query
+                .tc
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| "#000000".to_string()),
+            font_family: query
+                .tf
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| "Arial".to_string()),
             max_width: query.tmaxw.get(i).copied(),
             max_height: query.tmaxh.get(i).copied(),
-            align: query.ta.get(i).cloned().unwrap_or_else(|| "left".to_string()),
+            align: query
+                .ta
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| "left".to_string()),
             weight: sanitize_weight(query.tw.get(i).map(String::as_str)),
             // An outline is only applied when a non-empty color is supplied.
             outline_color: query
@@ -482,8 +494,7 @@ pub async fn handle_image(
 
         let mut result_image = base_image;
         if crop_cover {
-            result_image =
-                resize_crop_cover(&result_image, final_width, final_height, focus_y);
+            result_image = resize_crop_cover(&result_image, final_width, final_height, focus_y);
         } else if maxw.is_some() || maxh.is_some() {
             result_image = resize_image(&result_image, final_width, final_height);
         }
@@ -509,9 +520,7 @@ pub async fn handle_image(
             }
 
             if let Some(svg_bytes) = text_svg {
-                if let Ok(text_image) =
-                    render_svg_to_image(&svg_bytes, final_width, final_height)
-                {
+                if let Ok(text_image) = render_svg_to_image(&svg_bytes, final_width, final_height) {
                     composite_overlay(&mut base_rgba, &text_image, 0, 0);
                 }
             }
@@ -525,7 +534,10 @@ pub async fn handle_image(
     .map_err(|e| AppError::Internal(format!("CPU task failed: {}", e)))??;
 
     // Cache output
-    state.cache_manager.set_output(cache_key, output.clone()).await;
+    state
+        .cache_manager
+        .set_output(cache_key, output.clone())
+        .await;
 
     Ok((
         StatusCode::OK,

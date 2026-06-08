@@ -182,7 +182,14 @@ fn layout_lines(
                             face: &face,
                             units_per_em: if upem == 0 { 1000.0 } else { upem as f64 },
                         };
-                        wrap_lines(text, font_size, max_width, max_height, line_height, &measure)
+                        wrap_lines(
+                            text,
+                            font_size,
+                            max_width,
+                            max_height,
+                            line_height,
+                            &measure,
+                        )
                     })
                 })
                 .flatten()
@@ -239,13 +246,7 @@ fn wrap_lines<M: Measure>(
 }
 
 /// Greedy word-wrap of a single paragraph, appending resulting lines to `out`.
-fn wrap_paragraph<M: Measure>(
-    paragraph: &str,
-    max_w: f64,
-    fs: f64,
-    m: &M,
-    out: &mut Vec<String>,
-) {
+fn wrap_paragraph<M: Measure>(paragraph: &str, max_w: f64, fs: f64, m: &M, out: &mut Vec<String>) {
     let space_w = m.char_width(' ', fs);
     let mut cur = String::new();
     let mut cur_w = 0.0;
@@ -463,7 +464,10 @@ mod tests {
 
     #[test]
     fn no_constraints_keeps_single_line() {
-        assert_eq!(wrap_text("Hello World", 24, None, None), vec!["Hello World"]);
+        assert_eq!(
+            wrap_text("Hello World", 24, None, None),
+            vec!["Hello World"]
+        );
     }
 
     #[test]
@@ -486,7 +490,12 @@ mod tests {
     #[test]
     fn height_constraint_caps_lines_with_ellipsis() {
         // line_height = 12, max_height = 12 → exactly one line, ellipsized.
-        let lines = wrap_text("Hello World This is a long sentence", 10, Some(60), Some(12));
+        let lines = wrap_text(
+            "Hello World This is a long sentence",
+            10,
+            Some(60),
+            Some(12),
+        );
         assert_eq!(lines.len(), 1);
         assert!(lines[0].ends_with('…'), "got {:?}", lines[0]);
     }

@@ -5,11 +5,7 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use std::{
-    net::SocketAddr,
-    sync::Arc,
-    time::Instant,
-};
+use std::{net::SocketAddr, sync::Arc, time::Instant};
 use uuid::Uuid;
 
 use crate::config::Config;
@@ -46,7 +42,8 @@ pub async fn request_logging_middleware(
         // Still add request ID to response
         response.headers_mut().insert(
             X_REQUEST_ID.clone(),
-            HeaderValue::from_str(&request_id).unwrap_or_else(|_| HeaderValue::from_static("unknown")),
+            HeaderValue::from_str(&request_id)
+                .unwrap_or_else(|_| HeaderValue::from_static("unknown")),
         );
         return response;
     }
@@ -58,19 +55,17 @@ pub async fn request_logging_middleware(
     let client_ip = extract_client_ip(&req, Some(&addr), &config.trusted_proxies);
 
     // Extract source URL host for logging (if present in query)
-    let src_host = uri
-        .query()
-        .and_then(|q| {
-            q.split('&')
-                .find(|p| p.starts_with("src="))
-                .and_then(|p| p.strip_prefix("src="))
-                .and_then(|url| {
-                    // URL decode and extract host
-                    percent_decode(url)
-                        .and_then(|decoded| url::Url::parse(&decoded).ok())
-                        .and_then(|parsed| parsed.host_str().map(|h| h.to_string()))
-                })
-        });
+    let src_host = uri.query().and_then(|q| {
+        q.split('&')
+            .find(|p| p.starts_with("src="))
+            .and_then(|p| p.strip_prefix("src="))
+            .and_then(|url| {
+                // URL decode and extract host
+                percent_decode(url)
+                    .and_then(|decoded| url::Url::parse(&decoded).ok())
+                    .and_then(|parsed| parsed.host_str().map(|h| h.to_string()))
+            })
+    });
 
     let start = Instant::now();
 
@@ -147,7 +142,10 @@ mod tests {
             percent_decode("https%3A%2F%2Fexample.com%2Fimage.jpg"),
             Some("https://example.com/image.jpg".to_string())
         );
-        assert_eq!(percent_decode("hello+world"), Some("hello world".to_string()));
+        assert_eq!(
+            percent_decode("hello+world"),
+            Some("hello world".to_string())
+        );
         assert_eq!(percent_decode("simple"), Some("simple".to_string()));
     }
 }

@@ -4,8 +4,8 @@ use axum::{
     http::{
         header::{
             ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_ALLOW_HEADERS,
-            ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN,
-            ACCESS_CONTROL_MAX_AGE, ORIGIN,
+            ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_MAX_AGE,
+            ORIGIN,
         },
         HeaderValue, Method, Request, StatusCode,
     },

@@ -35,10 +35,7 @@ pub async fn referer_middleware(
     }
 
     // Extract referer header
-    let referer = req
-        .headers()
-        .get(REFERER)
-        .and_then(|h| h.to_str().ok());
+    let referer = req.headers().get(REFERER).and_then(|h| h.to_str().ok());
 
     // Allow requests with no referer (direct access, privacy tools, etc.)
     // This is configurable - some may want to require referer
@@ -138,10 +135,7 @@ mod tests {
 
     #[test]
     fn test_multiple_allowed_referers() {
-        let allowed = vec![
-            "example.com".to_string(),
-            "*.trusted.com".to_string(),
-        ];
+        let allowed = vec!["example.com".to_string(), "*.trusted.com".to_string()];
 
         assert!(is_referer_allowed("example.com", &allowed));
         assert!(is_referer_allowed("sub.trusted.com", &allowed));

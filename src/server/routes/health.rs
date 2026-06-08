@@ -1,4 +1,4 @@
-use axum::{http::StatusCode, response::IntoResponse, Json};
+use axum::{response::IntoResponse, Json};
 use serde_json::json;
 
 /// Health check endpoint

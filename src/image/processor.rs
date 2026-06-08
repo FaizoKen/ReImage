@@ -11,7 +11,7 @@ const MAX_MEGAPIXELS: u32 = 100_000_000;
 /// Decode image from bytes
 pub fn decode_image(data: &[u8]) -> AppResult<DynamicImage> {
     let cursor = Cursor::new(data);
-    image::io::Reader::new(cursor)
+    image::ImageReader::new(cursor)
         .with_guessed_format()
         .map_err(|e| AppError::ImageProcessing(format!("Failed to detect format: {}", e)))?
         .decode()
@@ -77,11 +77,7 @@ pub fn calculate_dimensions(
 /// CatmullRom (bicubic); override via `REIMAGE_RESIZE_FILTER` env var.
 /// Always returns an RGBA8 image — the downstream composite path needs
 /// RGBA anyway, so this saves one conversion when the source was non-RGBA.
-pub fn resize_image(
-    img: &DynamicImage,
-    width: u32,
-    height: u32,
-) -> DynamicImage {
+pub fn resize_image(img: &DynamicImage, width: u32, height: u32) -> DynamicImage {
     use fast_image_resize as fr;
     use fr::images::Image as FrImage;
 
@@ -197,9 +193,7 @@ fn resize_alg() -> fast_image_resize::ResizeAlg {
             .as_deref()
         {
             Some("nearest") => ResizeAlg::Nearest,
-            Some("triangle") | Some("bilinear") => {
-                ResizeAlg::Convolution(FilterType::Bilinear)
-            }
+            Some("triangle") | Some("bilinear") => ResizeAlg::Convolution(FilterType::Bilinear),
             Some("gaussian") => ResizeAlg::Convolution(FilterType::Gaussian),
             Some("lanczos3") => ResizeAlg::Convolution(FilterType::Lanczos3),
             Some("hamming") => ResizeAlg::Convolution(FilterType::Hamming),
@@ -267,63 +261,60 @@ pub fn apply_rounded_corners_inplace(rgba: &mut RgbaImage, radius: u32) {
     let bottom_right = (width - radius - 1, height - radius - 1);
 
     // Process rows in parallel using rayon
-    rgba.par_chunks_mut((width * 4) as usize).enumerate().for_each(|(y, row)| {
-        let y = y as u32;
+    rgba.par_chunks_mut((width * 4) as usize)
+        .enumerate()
+        .for_each(|(y, row)| {
+            let y = y as u32;
 
-        // Only process rows that could have corners
-        if y >= radius && y < bottom_edge {
-            return;
-        }
-
-        for x in 0..width {
-            // Only check pixels that could be in corner regions
-            if x >= radius && x < right_edge {
-                continue;
+            // Only process rows that could have corners
+            if y >= radius && y < bottom_edge {
+                return;
             }
 
-            let should_clip = {
-                // Inline corner check for each region
-                if x < radius && y < radius {
-                    // Top-left corner
-                    let dx = top_left.0 - x;
-                    let dy = top_left.1 - y;
-                    dx * dx + dy * dy > radius_sq
-                } else if x >= right_edge && y < radius {
-                    // Top-right corner
-                    let dx = x - top_right.0;
-                    let dy = top_right.1 - y;
-                    dx * dx + dy * dy > radius_sq
-                } else if x < radius && y >= bottom_edge {
-                    // Bottom-left corner
-                    let dx = bottom_left.0 - x;
-                    let dy = y - bottom_left.1;
-                    dx * dx + dy * dy > radius_sq
-                } else if x >= right_edge && y >= bottom_edge {
-                    // Bottom-right corner
-                    let dx = x - bottom_right.0;
-                    let dy = y - bottom_right.1;
-                    dx * dx + dy * dy > radius_sq
-                } else {
-                    false
+            for x in 0..width {
+                // Only check pixels that could be in corner regions
+                if x >= radius && x < right_edge {
+                    continue;
                 }
-            };
 
-            if should_clip {
-                row[(x * 4 + 3) as usize] = 0; // Set alpha to 0
+                let should_clip = {
+                    // Inline corner check for each region
+                    if x < radius && y < radius {
+                        // Top-left corner
+                        let dx = top_left.0 - x;
+                        let dy = top_left.1 - y;
+                        dx * dx + dy * dy > radius_sq
+                    } else if x >= right_edge && y < radius {
+                        // Top-right corner
+                        let dx = x - top_right.0;
+                        let dy = top_right.1 - y;
+                        dx * dx + dy * dy > radius_sq
+                    } else if x < radius && y >= bottom_edge {
+                        // Bottom-left corner
+                        let dx = bottom_left.0 - x;
+                        let dy = y - bottom_left.1;
+                        dx * dx + dy * dy > radius_sq
+                    } else if x >= right_edge && y >= bottom_edge {
+                        // Bottom-right corner
+                        let dx = x - bottom_right.0;
+                        let dy = y - bottom_right.1;
+                        dx * dx + dy * dy > radius_sq
+                    } else {
+                        false
+                    }
+                };
+
+                if should_clip {
+                    row[(x * 4 + 3) as usize] = 0; // Set alpha to 0
+                }
             }
-        }
-    });
+        });
 }
 
 /// Composite overlay image onto base at given position (optimized with integer math).
 /// Borrows the overlay's RGBA buffer when it's already RGBA8 to avoid a full
 /// per-call clone — every cached overlay reuse used to pay that copy.
-pub fn composite_overlay(
-    base: &mut RgbaImage,
-    overlay: &DynamicImage,
-    x: i64,
-    y: i64,
-) {
+pub fn composite_overlay(base: &mut RgbaImage, overlay: &DynamicImage, x: i64, y: i64) {
     let overlay_rgba: std::borrow::Cow<RgbaImage> = match overlay {
         DynamicImage::ImageRgba8(rgba) => std::borrow::Cow::Borrowed(rgba),
         other => std::borrow::Cow::Owned(other.to_rgba8()),
@@ -398,10 +389,21 @@ pub fn composite_overlay(
                     } else {
                         // Integer alpha blending: (src * alpha + dst * (255 - alpha) + 127) / 255
                         let inv_alpha = 255 - alpha;
-                        base_row[bi] = ((overlay_raw[oi] as u32 * alpha + base_row[bi] as u32 * inv_alpha + 127) / 255) as u8;
-                        base_row[bi + 1] = ((overlay_raw[oi + 1] as u32 * alpha + base_row[bi + 1] as u32 * inv_alpha + 127) / 255) as u8;
-                        base_row[bi + 2] = ((overlay_raw[oi + 2] as u32 * alpha + base_row[bi + 2] as u32 * inv_alpha + 127) / 255) as u8;
-                        base_row[bi + 3] = ((alpha * 255 + base_row[bi + 3] as u32 * inv_alpha + 127) / 255).min(255) as u8;
+                        base_row[bi] = ((overlay_raw[oi] as u32 * alpha
+                            + base_row[bi] as u32 * inv_alpha
+                            + 127)
+                            / 255) as u8;
+                        base_row[bi + 1] = ((overlay_raw[oi + 1] as u32 * alpha
+                            + base_row[bi + 1] as u32 * inv_alpha
+                            + 127)
+                            / 255) as u8;
+                        base_row[bi + 2] = ((overlay_raw[oi + 2] as u32 * alpha
+                            + base_row[bi + 2] as u32 * inv_alpha
+                            + 127)
+                            / 255) as u8;
+                        base_row[bi + 3] =
+                            ((alpha * 255 + base_row[bi + 3] as u32 * inv_alpha + 127) / 255)
+                                .min(255) as u8;
                     }
                 }
             });
@@ -433,10 +435,20 @@ pub fn composite_overlay(
                     base_raw[bi + 3] = 255;
                 } else {
                     let inv_alpha = 255 - alpha;
-                    base_raw[bi] = ((overlay_raw[oi] as u32 * alpha + base_raw[bi] as u32 * inv_alpha + 127) / 255) as u8;
-                    base_raw[bi + 1] = ((overlay_raw[oi + 1] as u32 * alpha + base_raw[bi + 1] as u32 * inv_alpha + 127) / 255) as u8;
-                    base_raw[bi + 2] = ((overlay_raw[oi + 2] as u32 * alpha + base_raw[bi + 2] as u32 * inv_alpha + 127) / 255) as u8;
-                    base_raw[bi + 3] = ((alpha * 255 + base_raw[bi + 3] as u32 * inv_alpha + 127) / 255).min(255) as u8;
+                    base_raw[bi] =
+                        ((overlay_raw[oi] as u32 * alpha + base_raw[bi] as u32 * inv_alpha + 127)
+                            / 255) as u8;
+                    base_raw[bi + 1] = ((overlay_raw[oi + 1] as u32 * alpha
+                        + base_raw[bi + 1] as u32 * inv_alpha
+                        + 127)
+                        / 255) as u8;
+                    base_raw[bi + 2] = ((overlay_raw[oi + 2] as u32 * alpha
+                        + base_raw[bi + 2] as u32 * inv_alpha
+                        + 127)
+                        / 255) as u8;
+                    base_raw[bi + 3] = ((alpha * 255 + base_raw[bi + 3] as u32 * inv_alpha + 127)
+                        / 255)
+                        .min(255) as u8;
                 }
             }
         }
@@ -597,11 +609,14 @@ fn composite_rgba(base: &mut RgbaImage, top: &RgbaImage) {
                     row[bi + 3] = 255;
                 } else {
                     let inv = 255 - alpha;
-                    row[bi] = ((top_raw[si] as u32 * alpha + row[bi] as u32 * inv + 127) / 255) as u8;
+                    row[bi] =
+                        ((top_raw[si] as u32 * alpha + row[bi] as u32 * inv + 127) / 255) as u8;
                     row[bi + 1] =
-                        ((top_raw[si + 1] as u32 * alpha + row[bi + 1] as u32 * inv + 127) / 255) as u8;
+                        ((top_raw[si + 1] as u32 * alpha + row[bi + 1] as u32 * inv + 127) / 255)
+                            as u8;
                     row[bi + 2] =
-                        ((top_raw[si + 2] as u32 * alpha + row[bi + 2] as u32 * inv + 127) / 255) as u8;
+                        ((top_raw[si + 2] as u32 * alpha + row[bi + 2] as u32 * inv + 127) / 255)
+                            as u8;
                     row[bi + 3] =
                         ((alpha * 255 + row[bi + 3] as u32 * inv + 127) / 255).min(255) as u8;
                 }
@@ -618,7 +633,10 @@ mod tests {
         // Original 1000x500
         assert_eq!(calculate_dimensions(1000, 500, Some(500), None), (500, 250));
         assert_eq!(calculate_dimensions(1000, 500, None, Some(250)), (500, 250));
-        assert_eq!(calculate_dimensions(1000, 500, Some(400), Some(300)), (400, 200));
+        assert_eq!(
+            calculate_dimensions(1000, 500, Some(400), Some(300)),
+            (400, 200)
+        );
 
         // No resize
         assert_eq!(calculate_dimensions(1000, 500, None, None), (1000, 500));
@@ -638,11 +656,20 @@ mod tests {
         );
 
         // Focus extremes stay in bounds and still yield the exact size.
-        assert_eq!(resize_crop_cover(&src, 480, 100, 0.0).dimensions(), (480, 100));
-        assert_eq!(resize_crop_cover(&src, 480, 100, 1.0).dimensions(), (480, 100));
+        assert_eq!(
+            resize_crop_cover(&src, 480, 100, 0.0).dimensions(),
+            (480, 100)
+        );
+        assert_eq!(
+            resize_crop_cover(&src, 480, 100, 1.0).dimensions(),
+            (480, 100)
+        );
 
         // Degenerate inputs return the source untouched rather than panicking.
-        assert_eq!(resize_crop_cover(&src, 0, 100, 0.5).dimensions(), (600, 240));
+        assert_eq!(
+            resize_crop_cover(&src, 0, 100, 0.5).dimensions(),
+            (600, 240)
+        );
     }
 
     #[test]
@@ -652,11 +679,8 @@ mod tests {
         // (x, y)), the renderer previously capped the read window at the base
         // canvas size, clipping the bottom/right of the visible overlay.
         let mut base = RgbaImage::from_pixel(40, 40, image::Rgba([0, 0, 0, 255]));
-        let overlay = DynamicImage::ImageRgba8(RgbaImage::from_pixel(
-            60,
-            60,
-            image::Rgba([255, 0, 0, 255]),
-        ));
+        let overlay =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(60, 60, image::Rgba([255, 0, 0, 255])));
         // Place overlay so its centre 40x40 covers the canvas: padding of 10 on each side.
         composite_overlay(&mut base, &overlay, -10, -10);
         // Every canvas pixel must now be red — none of the visible window is lost.

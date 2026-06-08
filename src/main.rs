@@ -1,3 +1,9 @@
+// Several modules expose utility helpers, config fields, and error variants
+// that are part of the intended surface but not all wired into the current
+// binary path (e.g. alternate validators, future error cases). Allow them
+// crate-wide rather than peppering #[allow] on each item.
+#![allow(dead_code)]
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -28,22 +34,18 @@ async fn main() {
     // Load configuration
     let config = Arc::new(Config::from_env());
 
-    tracing::info!(
-        "Starting ReImage server on port {}",
-        config.port
-    );
+    tracing::info!("Starting ReImage server on port {}", config.port);
 
     // Create application
     let app = create_app(config.clone());
 
     // Bind to address
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
-    let listener = TcpListener::bind(addr).await.expect("Failed to bind to address");
+    let listener = TcpListener::bind(addr)
+        .await
+        .expect("Failed to bind to address");
 
-    tracing::info!(
-        "Server listening on {}",
-        listener.local_addr().unwrap()
-    );
+    tracing::info!("Server listening on {}", listener.local_addr().unwrap());
 
     // Run server with graceful shutdown
     axum::serve(
@@ -59,14 +61,13 @@ async fn main() {
 
 /// Initialize logging based on environment
 fn init_logging() {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| {
-            if std::env::var("NODE_ENV").as_deref() == Ok("production") {
-                EnvFilter::new("warn")
-            } else {
-                EnvFilter::new("info")
-            }
-        });
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        if std::env::var("NODE_ENV").as_deref() == Ok("production") {
+            EnvFilter::new("warn")
+        } else {
+            EnvFilter::new("info")
+        }
+    });
 
     let is_production = std::env::var("NODE_ENV").as_deref() == Ok("production");
 

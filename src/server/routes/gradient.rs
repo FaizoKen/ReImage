@@ -55,10 +55,13 @@ fn parse_hex(s: &str) -> AppResult<(u8, u8, u8)> {
             s
         )));
     }
-    let n = u32::from_str_radix(s, 16).map_err(|_| {
-        AppError::BadRequest(format!("invalid color (parse failed): {}", s))
-    })?;
-    Ok((((n >> 16) & 0xff) as u8, ((n >> 8) & 0xff) as u8, (n & 0xff) as u8))
+    let n = u32::from_str_radix(s, 16)
+        .map_err(|_| AppError::BadRequest(format!("invalid color (parse failed): {}", s)))?;
+    Ok((
+        ((n >> 16) & 0xff) as u8,
+        ((n >> 8) & 0xff) as u8,
+        (n & 0xff) as u8,
+    ))
 }
 
 /// Factor used to derive the lighter inner stop from the base colour `c`.
@@ -108,20 +111,20 @@ pub async fn handle_gradient(
     };
 
     // Cache by all parameters.
-    let cache_key = format!("gradient:{:06x}:{:06x}:{}x{}",
+    let cache_key = format!(
+        "gradient:{:06x}:{:06x}:{}x{}",
         ((inner.0 as u32) << 16) | ((inner.1 as u32) << 8) | (inner.2 as u32),
         ((outer.0 as u32) << 16) | ((outer.1 as u32) << 8) | (outer.2 as u32),
-        w, h);
+        w,
+        h
+    );
 
     if let Some(cached) = state.cache_manager.get_output(&cache_key).await {
         return Ok((
             StatusCode::OK,
             [
                 (header::CONTENT_TYPE, "image/webp"),
-                (
-                    header::CACHE_CONTROL,
-                    "public, max-age=31536000, immutable",
-                ),
+                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
                 (header::HeaderName::from_static("x-cache"), "HIT"),
             ],
             cached,
@@ -139,10 +142,7 @@ pub async fn handle_gradient(
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "image/webp"),
-            (
-                header::CACHE_CONTROL,
-                "public, max-age=31536000, immutable",
-            ),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
             (header::HeaderName::from_static("x-cache"), "MISS"),
         ],
         webp,
@@ -165,12 +165,7 @@ pub async fn handle_gradient(
 /// Unlike the old vertical gradient the colour varies per pixel (the centre
 /// is off-axis), so each pixel is written individually rather than memcpy'd
 /// across a row.
-fn render_radial(
-    w: u32,
-    h: u32,
-    inner: (u8, u8, u8),
-    outer: (u8, u8, u8),
-) -> RgbImage {
+fn render_radial(w: u32, h: u32, inner: (u8, u8, u8), outer: (u8, u8, u8)) -> RgbImage {
     // Ellipse geometry, in pixels, straight from the Discord CSS.
     let wf = w as f32;
     let hf = h as f32;
@@ -209,6 +204,10 @@ fn render_radial(
     RgbImage::from_raw(w, h, buf).expect("buffer sized correctly")
 }
 
+// Suppress unused warning for Bytes when feature flags evolve.
+#[allow(dead_code)]
+fn _bytes_marker(_: Bytes) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,7 +232,3 @@ mod tests {
         assert!(top_centre <= 10, "top too light: {top_centre}");
     }
 }
-
-// Suppress unused warning for Bytes when feature flags evolve.
-#[allow(dead_code)]
-fn _bytes_marker(_: Bytes) {}

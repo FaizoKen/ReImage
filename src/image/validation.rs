@@ -18,7 +18,12 @@ static ALLOWED_CONTENT_TYPES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 
 /// Check if content type is a valid image type
 pub fn is_valid_content_type(content_type: &str) -> bool {
-    let ct = content_type.split(';').next().unwrap_or("").trim().to_lowercase();
+    let ct = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
 
     // Allow if in whitelist
     if ALLOWED_CONTENT_TYPES.contains(ct.as_str()) {
@@ -85,12 +90,7 @@ pub fn is_valid_image_buffer(buf: &[u8]) -> bool {
     }
 
     // AVIF/HEIC: check for ftyp box
-    if buf.len() > 11
-        && buf[4] == 0x66
-        && buf[5] == 0x74
-        && buf[6] == 0x79
-        && buf[7] == 0x70
-    {
+    if buf.len() > 11 && buf[4] == 0x66 && buf[5] == 0x74 && buf[6] == 0x79 && buf[7] == 0x70 {
         return true;
     }
 
@@ -148,12 +148,7 @@ pub fn detect_format(buf: &[u8]) -> Option<&'static str> {
     }
 
     // AVIF
-    if buf.len() > 11
-        && buf[4] == 0x66
-        && buf[5] == 0x74
-        && buf[6] == 0x79
-        && buf[7] == 0x70
-    {
+    if buf.len() > 11 && buf[4] == 0x66 && buf[5] == 0x74 && buf[6] == 0x79 && buf[7] == 0x70 {
         return Some("avif");
     }
 

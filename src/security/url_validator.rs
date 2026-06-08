@@ -73,7 +73,10 @@ pub fn validate_url_format(url_string: &str, max_length: usize) -> ValidationRes
 }
 
 /// Validate URL format with full options
-pub fn validate_url_format_with_options(url_string: &str, options: &UrlValidationOptions) -> ValidationResult {
+pub fn validate_url_format_with_options(
+    url_string: &str,
+    options: &UrlValidationOptions,
+) -> ValidationResult {
     // Check URL length
     if url_string.is_empty() || url_string.len() > options.max_length {
         return ValidationResult::failure("URL too long or empty");
@@ -117,17 +120,16 @@ pub fn validate_url_format_with_options(url_string: &str, options: &UrlValidatio
     }
 
     // Check domain allowlist (if configured)
-    if !options.allowed_domains.is_empty() {
-        if !is_domain_in_list(&hostname, &options.allowed_domains) {
-            return ValidationResult::failure("Domain not in allowlist");
-        }
+    if !options.allowed_domains.is_empty()
+        && !is_domain_in_list(&hostname, &options.allowed_domains)
+    {
+        return ValidationResult::failure("Domain not in allowlist");
     }
 
     // Check domain blocklist (if configured)
-    if !options.blocked_domains.is_empty() {
-        if is_domain_in_list(&hostname, &options.blocked_domains) {
-            return ValidationResult::failure("Domain is blocked");
-        }
+    if !options.blocked_domains.is_empty() && is_domain_in_list(&hostname, &options.blocked_domains)
+    {
+        return ValidationResult::failure("Domain is blocked");
     }
 
     ValidationResult::success(parsed, hostname)
@@ -212,7 +214,10 @@ mod tests {
 
         let result = validate_url_format_with_options("http://example.com/image.jpg", &options);
         assert!(!result.valid);
-        assert_eq!(result.reason, Some("Only HTTPS URLs are allowed".to_string()));
+        assert_eq!(
+            result.reason,
+            Some("Only HTTPS URLs are allowed".to_string())
+        );
     }
 
     #[test]
@@ -224,7 +229,8 @@ mod tests {
         let options = UrlValidationOptions::new(2048).with_allowed_domains(allowed);
 
         // Exact match should work
-        let result = validate_url_format_with_options("https://images.example.com/img.jpg", &options);
+        let result =
+            validate_url_format_with_options("https://images.example.com/img.jpg", &options);
         assert!(result.valid);
 
         // Wildcard match should work

@@ -8,35 +8,35 @@ use std::str::FromStr;
 static PRIVATE_RANGES: Lazy<Vec<IpNetwork>> = Lazy::new(|| {
     vec![
         // IPv4 ranges
-        "127.0.0.0/8".parse().unwrap(),       // Loopback
-        "10.0.0.0/8".parse().unwrap(),        // Private Class A
-        "172.16.0.0/12".parse().unwrap(),     // Private Class B
-        "192.168.0.0/16".parse().unwrap(),    // Private Class C
-        "169.254.0.0/16".parse().unwrap(),    // Link-local (AWS/Azure/GCP metadata)
-        "0.0.0.0/8".parse().unwrap(),         // Current network
-        "100.64.0.0/10".parse().unwrap(),     // Carrier-grade NAT
-        "192.0.0.0/24".parse().unwrap(),      // IETF Protocol Assignments
-        "192.0.2.0/24".parse().unwrap(),      // TEST-NET-1
-        "198.18.0.0/15".parse().unwrap(),     // Benchmarking
-        "198.51.100.0/24".parse().unwrap(),   // TEST-NET-2
-        "203.0.113.0/24".parse().unwrap(),    // TEST-NET-3
-        "224.0.0.0/4".parse().unwrap(),       // Multicast
-        "240.0.0.0/4".parse().unwrap(),       // Reserved
+        "127.0.0.0/8".parse().unwrap(),        // Loopback
+        "10.0.0.0/8".parse().unwrap(),         // Private Class A
+        "172.16.0.0/12".parse().unwrap(),      // Private Class B
+        "192.168.0.0/16".parse().unwrap(),     // Private Class C
+        "169.254.0.0/16".parse().unwrap(),     // Link-local (AWS/Azure/GCP metadata)
+        "0.0.0.0/8".parse().unwrap(),          // Current network
+        "100.64.0.0/10".parse().unwrap(),      // Carrier-grade NAT
+        "192.0.0.0/24".parse().unwrap(),       // IETF Protocol Assignments
+        "192.0.2.0/24".parse().unwrap(),       // TEST-NET-1
+        "198.18.0.0/15".parse().unwrap(),      // Benchmarking
+        "198.51.100.0/24".parse().unwrap(),    // TEST-NET-2
+        "203.0.113.0/24".parse().unwrap(),     // TEST-NET-3
+        "224.0.0.0/4".parse().unwrap(),        // Multicast
+        "240.0.0.0/4".parse().unwrap(),        // Reserved
         "255.255.255.255/32".parse().unwrap(), // Broadcast
         // IPv6 ranges
-        "::1/128".parse().unwrap(),           // IPv6 loopback
-        "::/128".parse().unwrap(),            // IPv6 unspecified
-        "::ffff:0:0/96".parse().unwrap(),     // IPv4-mapped IPv6
-        "64:ff9b::/96".parse().unwrap(),      // IPv4/IPv6 translation
-        "100::/64".parse().unwrap(),          // Discard prefix
-        "2001::/32".parse().unwrap(),         // Teredo
-        "2001:10::/28".parse().unwrap(),      // ORCHID
-        "2001:20::/28".parse().unwrap(),      // ORCHIDv2
-        "2001:db8::/32".parse().unwrap(),     // Documentation
-        "2002::/16".parse().unwrap(),         // 6to4
-        "fc00::/7".parse().unwrap(),          // IPv6 unique local
-        "fe80::/10".parse().unwrap(),         // IPv6 link-local
-        "ff00::/8".parse().unwrap(),          // IPv6 multicast
+        "::1/128".parse().unwrap(),       // IPv6 loopback
+        "::/128".parse().unwrap(),        // IPv6 unspecified
+        "::ffff:0:0/96".parse().unwrap(), // IPv4-mapped IPv6
+        "64:ff9b::/96".parse().unwrap(),  // IPv4/IPv6 translation
+        "100::/64".parse().unwrap(),      // Discard prefix
+        "2001::/32".parse().unwrap(),     // Teredo
+        "2001:10::/28".parse().unwrap(),  // ORCHID
+        "2001:20::/28".parse().unwrap(),  // ORCHIDv2
+        "2001:db8::/32".parse().unwrap(), // Documentation
+        "2002::/16".parse().unwrap(),     // 6to4
+        "fc00::/7".parse().unwrap(),      // IPv6 unique local
+        "fe80::/10".parse().unwrap(),     // IPv6 link-local
+        "ff00::/8".parse().unwrap(),      // IPv6 multicast
     ]
 });
 
@@ -70,10 +70,10 @@ static BLOCKED_HOSTNAMES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     set.insert("management.azure.com");
 
     // DigitalOcean metadata
-    set.insert("169.254.169.254");  // Same as AWS
+    set.insert("169.254.169.254"); // Same as AWS
 
     // Oracle Cloud metadata
-    set.insert("169.254.169.254");  // Same as AWS
+    set.insert("169.254.169.254"); // Same as AWS
 
     // Kubernetes internal
     set.insert("kubernetes");
@@ -85,7 +85,7 @@ static BLOCKED_HOSTNAMES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     set.insert("100.100.100.200");
 
     // Hetzner Cloud metadata
-    set.insert("169.254.169.254");  // Same as AWS
+    set.insert("169.254.169.254"); // Same as AWS
 
     set
 });
@@ -117,7 +117,9 @@ pub fn is_private_ip(ip: IpAddr) -> bool {
         v4 => v4,
     };
 
-    PRIVATE_RANGES.iter().any(|range| range.contains(effective_ip))
+    PRIVATE_RANGES
+        .iter()
+        .any(|range| range.contains(effective_ip))
 }
 
 /// Check if a hostname is blocked
@@ -177,8 +179,8 @@ mod tests {
         assert!(is_private_ip("10.0.0.1".parse().unwrap()));
         assert!(is_private_ip("172.16.0.1".parse().unwrap()));
         assert!(is_private_ip("192.168.1.1".parse().unwrap()));
-        assert!(is_private_ip("169.254.1.1".parse().unwrap()));  // Link-local (metadata)
-        assert!(is_private_ip("100.64.0.1".parse().unwrap()));   // Carrier-grade NAT
+        assert!(is_private_ip("169.254.1.1".parse().unwrap())); // Link-local (metadata)
+        assert!(is_private_ip("100.64.0.1".parse().unwrap())); // Carrier-grade NAT
 
         // Public IPs should pass
         assert!(!is_private_ip("8.8.8.8".parse().unwrap()));
@@ -189,10 +191,10 @@ mod tests {
     #[test]
     fn test_private_ip_detection_ipv6() {
         // IPv6 private ranges
-        assert!(is_private_ip("::1".parse().unwrap()));          // Loopback
-        assert!(is_private_ip("fc00::1".parse().unwrap()));      // Unique local
-        assert!(is_private_ip("fe80::1".parse().unwrap()));      // Link-local
-        assert!(is_private_ip("ff02::1".parse().unwrap()));      // Multicast
+        assert!(is_private_ip("::1".parse().unwrap())); // Loopback
+        assert!(is_private_ip("fc00::1".parse().unwrap())); // Unique local
+        assert!(is_private_ip("fe80::1".parse().unwrap())); // Link-local
+        assert!(is_private_ip("ff02::1".parse().unwrap())); // Multicast
 
         // Public IPv6 should pass
         assert!(!is_private_ip("2607:f8b0:4004:800::200e".parse().unwrap()));

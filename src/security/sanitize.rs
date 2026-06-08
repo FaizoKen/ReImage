@@ -37,15 +37,10 @@ pub fn sanitize_color(color: Option<&str>) -> String {
     };
 
     // Check for valid hex color
-    let hex_pattern = if color.starts_with('#') {
-        &color[1..]
-    } else {
-        color
-    };
+    let hex_pattern = color.strip_prefix('#').unwrap_or(color);
 
     // Valid hex formats: RGB (3), RRGGBB (6), RRGGBBAA (8)
-    if matches!(hex_pattern.len(), 3 | 6 | 8)
-        && hex_pattern.chars().all(|c| c.is_ascii_hexdigit())
+    if matches!(hex_pattern.len(), 3 | 6 | 8) && hex_pattern.chars().all(|c| c.is_ascii_hexdigit())
     {
         if color.starts_with('#') {
             return color.to_string();

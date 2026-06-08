@@ -19,7 +19,7 @@ pub fn is_retryable_error(error: &reqwest::Error, status_code: Option<u16>) -> b
 
     // Retry on server errors (5xx)
     if let Some(status) = status_code {
-        if status >= 500 && status < 600 {
+        if (500..600).contains(&status) {
             return true;
         }
         // Retry on rate limiting
@@ -45,11 +45,7 @@ pub fn is_permanent_error(error_msg: &str) -> bool {
 }
 
 /// Calculate backoff delay for retry attempt
-pub fn calculate_backoff(
-    attempt: u32,
-    initial_delay: Duration,
-    multiplier: f64,
-) -> Duration {
+pub fn calculate_backoff(attempt: u32, initial_delay: Duration, multiplier: f64) -> Duration {
     let delay_ms = initial_delay.as_millis() as f64 * multiplier.powi(attempt as i32);
     Duration::from_millis(delay_ms.round() as u64)
 }

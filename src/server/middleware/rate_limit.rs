@@ -24,36 +24,46 @@ use std::{
 
 use crate::config::Config;
 
+/// Keyless, in-memory, default-clock rate limiter — the concrete `governor`
+/// type we use everywhere. Aliased to keep the `Cache` signatures readable.
+type DirectRateLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
+
 /// Rate limiters per IP address
-static RATE_LIMITERS: Lazy<Cache<IpAddr, Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>>> =
-    Lazy::new(|| {
-        Cache::builder()
-            .max_capacity(100_000)
-            .time_to_idle(Duration::from_secs(120))
-            .build()
-    });
+static RATE_LIMITERS: Lazy<Cache<IpAddr, Arc<DirectRateLimiter>>> = Lazy::new(|| {
+    Cache::builder()
+        .max_capacity(100_000)
+        .time_to_idle(Duration::from_secs(120))
+        .build()
+});
 
 /// Rate limiters per API key
-static API_KEY_RATE_LIMITERS: Lazy<Cache<String, Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>>> =
-    Lazy::new(|| {
-        Cache::builder()
-            .max_capacity(10_000)
-            .time_to_idle(Duration::from_secs(120))
-            .build()
-    });
+static API_KEY_RATE_LIMITERS: Lazy<Cache<String, Arc<DirectRateLimiter>>> = Lazy::new(|| {
+    Cache::builder()
+        .max_capacity(10_000)
+        .time_to_idle(Duration::from_secs(120))
+        .build()
+});
 
 /// Get or create rate limiter for IP
-fn get_rate_limiter(ip: IpAddr, rate_limit: u32) -> Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>> {
+fn get_rate_limiter(
+    ip: IpAddr,
+    rate_limit: u32,
+) -> Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>> {
     RATE_LIMITERS.get_with(ip, || {
-        let quota = Quota::per_minute(NonZeroU32::new(rate_limit).unwrap_or(NonZeroU32::new(100).unwrap()));
+        let quota =
+            Quota::per_minute(NonZeroU32::new(rate_limit).unwrap_or(NonZeroU32::new(100).unwrap()));
         Arc::new(RateLimiter::direct(quota))
     })
 }
 
 /// Get or create rate limiter for API key
-fn get_api_key_rate_limiter(key: &str, rate_limit: u32) -> Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>> {
+fn get_api_key_rate_limiter(
+    key: &str,
+    rate_limit: u32,
+) -> Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>> {
     API_KEY_RATE_LIMITERS.get_with(key.to_string(), || {
-        let quota = Quota::per_minute(NonZeroU32::new(rate_limit).unwrap_or(NonZeroU32::new(100).unwrap()));
+        let quota =
+            Quota::per_minute(NonZeroU32::new(rate_limit).unwrap_or(NonZeroU32::new(100).unwrap()));
         Arc::new(RateLimiter::direct(quota))
     })
 }

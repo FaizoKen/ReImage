@@ -242,8 +242,14 @@ impl Config {
             agent_body_timeout: Duration::from_millis(env_u64("AGENT_BODY_TIMEOUT", 30000)),
             agent_connections: env_u64("AGENT_CONNECTIONS", 128) as usize,
             agent_pipelining: env_u64("AGENT_PIPELINING", 10) as usize,
-            agent_keepalive_timeout: Duration::from_millis(env_u64("AGENT_KEEPALIVE_TIMEOUT", 30000)),
-            agent_keepalive_max_timeout: Duration::from_millis(env_u64("AGENT_KEEPALIVE_MAX_TIMEOUT", 60000)),
+            agent_keepalive_timeout: Duration::from_millis(env_u64(
+                "AGENT_KEEPALIVE_TIMEOUT",
+                30000,
+            )),
+            agent_keepalive_max_timeout: Duration::from_millis(env_u64(
+                "AGENT_KEEPALIVE_MAX_TIMEOUT",
+                60000,
+            )),
             agent_reject_unauthorized: env_bool("AGENT_REJECT_UNAUTHORIZED", true),
 
             // Fetch timeouts

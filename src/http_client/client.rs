@@ -139,12 +139,7 @@ impl HttpClient {
     /// Get-or-build a client with DNS pinned for (hostname, ip, port).
     /// Reuses the connection pool across requests to the same origin so we
     /// don't pay the TLS handshake + pool-setup cost every fetch.
-    fn get_pinned_client(
-        &self,
-        hostname: &str,
-        resolved_ip: IpAddr,
-        port: u16,
-    ) -> Client {
+    fn get_pinned_client(&self, hostname: &str, resolved_ip: IpAddr, port: u16) -> Client {
         let key = (hostname.to_string(), resolved_ip, port);
         let connect_timeout = self.agent_connect_timeout;
         let body_timeout = self.agent_body_timeout;
@@ -176,7 +171,9 @@ impl HttpClient {
         let validation = validate_url_format_with_options(url, &self.validation_options);
         if !validation.valid {
             return Err(FetchError::Permanent(
-                validation.reason.unwrap_or_else(|| "Invalid URL".to_string()),
+                validation
+                    .reason
+                    .unwrap_or_else(|| "Invalid URL".to_string()),
             ));
         }
 
@@ -186,9 +183,12 @@ impl HttpClient {
         // Same-host short-circuit: if this URL targets our own public hostname,
         // bypass DNS + Cloudflare and fetch the rewritten URL over loopback.
         // /image is excluded to prevent self-recursive loops.
-        if let Some(rewrite) =
-            maybe_rewrite_self(&parsed_url, &hostname, self.self_host.as_deref(), self.self_port)?
-        {
+        if let Some(rewrite) = maybe_rewrite_self(
+            &parsed_url,
+            &hostname,
+            self.self_host.as_deref(),
+            self.self_port,
+        )? {
             let timeout = if is_overlay {
                 self.fetch_timeout_overlay
             } else {
@@ -218,14 +218,19 @@ impl HttpClient {
             .dns_resolver
             .lookup(&hostname)
             .await
-            .map_err(|e| FetchError::Permanent(e))?;
+            .map_err(FetchError::Permanent)?;
 
-        validate_resolved_ip(resolved_ip).map_err(|e| FetchError::Permanent(e))?;
+        validate_resolved_ip(resolved_ip).map_err(FetchError::Permanent)?;
 
         // Get the port from the URL
-        let port = parsed_url.port_or_known_default().unwrap_or(
-            if parsed_url.scheme() == "https" { 443 } else { 80 }
-        );
+        let port =
+            parsed_url
+                .port_or_known_default()
+                .unwrap_or(if parsed_url.scheme() == "https" {
+                    443
+                } else {
+                    80
+                });
 
         // Perform fetch with retry
         let timeout = if is_overlay {
@@ -250,10 +255,17 @@ impl HttpClient {
 
             // DNS rebinding protection: use the resolved IP directly
             // This prevents DNS rebinding attacks where DNS returns a different IP on retry
-            match self.fetch_once_with_resolved_ip(url, &hostname, resolved_ip, port, timeout).await {
+            match self
+                .fetch_once_with_resolved_ip(url, &hostname, resolved_ip, port, timeout)
+                .await
+            {
                 Ok(buffer) => {
                     if attempt > 0 {
-                        tracing::info!(url = url, attempt = attempt, "Image fetch succeeded after retry");
+                        tracing::info!(
+                            url = url,
+                            attempt = attempt,
+                            "Image fetch succeeded after retry"
+                        );
                     }
                     return Ok(buffer);
                 }
@@ -361,7 +373,9 @@ impl HttpClient {
 
         // Validate magic bytes
         if !is_valid_image_buffer(&bytes) {
-            return Err(FetchError::Permanent("Invalid image magic bytes".to_string()));
+            return Err(FetchError::Permanent(
+                "Invalid image magic bytes".to_string(),
+            ));
         }
 
         Ok(bytes)
@@ -503,26 +517,15 @@ mod tests {
     #[test]
     fn rewrite_skipped_for_different_host() {
         let url = parse("https://example.com/image.png");
-        let out = maybe_rewrite_self(
-            &url,
-            "example.com",
-            Some("reimage.faizo.net"),
-            8080,
-        )
-        .unwrap();
+        let out = maybe_rewrite_self(&url, "example.com", Some("reimage.faizo.net"), 8080).unwrap();
         assert!(out.is_none());
     }
 
     #[test]
     fn rewrite_preserves_path_and_query() {
         let url = parse("https://reimage.faizo.net/gradient?c=5865F2&w=600");
-        let out = maybe_rewrite_self(
-            &url,
-            "reimage.faizo.net",
-            Some("reimage.faizo.net"),
-            8080,
-        )
-        .unwrap();
+        let out =
+            maybe_rewrite_self(&url, "reimage.faizo.net", Some("reimage.faizo.net"), 8080).unwrap();
         assert_eq!(
             out.as_deref(),
             Some("http://127.0.0.1:8080/gradient?c=5865F2&w=600")
@@ -532,26 +535,16 @@ mod tests {
     #[test]
     fn rewrite_handles_no_query() {
         let url = parse("https://reimage.faizo.net/health");
-        let out = maybe_rewrite_self(
-            &url,
-            "reimage.faizo.net",
-            Some("reimage.faizo.net"),
-            8080,
-        )
-        .unwrap();
+        let out =
+            maybe_rewrite_self(&url, "reimage.faizo.net", Some("reimage.faizo.net"), 8080).unwrap();
         assert_eq!(out.as_deref(), Some("http://127.0.0.1:8080/health"));
     }
 
     #[test]
     fn rewrite_is_case_insensitive() {
         let url = parse("https://ReImage.Faizo.Net/gradient?c=ff0000");
-        let out = maybe_rewrite_self(
-            &url,
-            "reimage.faizo.net",
-            Some("REIMAGE.FAIZO.NET"),
-            8080,
-        )
-        .unwrap();
+        let out =
+            maybe_rewrite_self(&url, "reimage.faizo.net", Some("REIMAGE.FAIZO.NET"), 8080).unwrap();
         assert_eq!(
             out.as_deref(),
             Some("http://127.0.0.1:8080/gradient?c=ff0000")
@@ -561,12 +554,7 @@ mod tests {
     #[test]
     fn rewrite_rejects_self_image_loop() {
         let url = parse("https://reimage.faizo.net/image?src=https://example.com/x.png");
-        let result = maybe_rewrite_self(
-            &url,
-            "reimage.faizo.net",
-            Some("reimage.faizo.net"),
-            8080,
-        );
+        let result = maybe_rewrite_self(&url, "reimage.faizo.net", Some("reimage.faizo.net"), 8080);
         match result {
             Err(FetchError::Permanent(msg)) => assert!(msg.contains("recursive")),
             other => panic!("expected Permanent error, got {:?}", other),

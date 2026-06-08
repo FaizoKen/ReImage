@@ -1,8 +1,4 @@
-use axum::{
-    middleware,
-    routing::get,
-    Router,
-};
+use axum::{http::StatusCode, middleware, routing::get, Router};
 use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::timeout::TimeoutLayer;
@@ -38,7 +34,10 @@ pub fn create_app(config: Arc<Config>) -> Router {
     // 6. Security headers (X-Frame-Options, CSP, etc.)
     // 7. Timeout (request timeout)
     let middleware_stack = ServiceBuilder::new()
-        .layer(TimeoutLayer::new(config.request_timeout))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            config.request_timeout,
+        ))
         .layer(middleware::from_fn_with_state(
             config.clone(),
             security_headers_middleware_with_state,
