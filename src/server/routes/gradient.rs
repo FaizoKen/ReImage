@@ -194,7 +194,7 @@ fn render_radial(w: u32, h: u32, inner: (u8, u8, u8), outer: (u8, u8, u8)) -> Rg
         let ny = (y as f32 + 0.5 - cy) / ry;
         let row_start = y as usize * row_bytes;
         let row = &mut buf[row_start..row_start + row_bytes];
-        for (x, chunk) in row.chunks_exact_mut(3).enumerate() {
+        for (x, chunk) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
             let nx = (x as f32 + 0.5 - cx) / rx;
             let dist = (nx * nx + ny * ny).sqrt();
             // Position within the inner↔outer ramp, flat outside the stops.

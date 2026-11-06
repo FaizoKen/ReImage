@@ -171,7 +171,7 @@ pub fn apply_brightness(img: DynamicImage, factor: f32) -> DynamicImage {
 
     let row_stride = rgba.width() as usize * 4;
     rgba.par_chunks_mut(row_stride).for_each(|row| {
-        for px in row.chunks_exact_mut(4) {
+        for px in row.as_chunks_mut::<4>().0 {
             px[0] = lut[px[0] as usize];
             px[1] = lut[px[1] as usize];
             px[2] = lut[px[2] as usize];
